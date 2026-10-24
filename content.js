@@ -50,6 +50,52 @@
     return buttons[0] ?? null;
   };
 
+  // 編集・ステータス画面の外を一度クリックし、表示中の編集状態を確定させて閉じます。
+  const clickOutsideEditor = async (row) => {
+    const backdrops = [...document.querySelectorAll('.MuiBackdrop-root, [data-testid*="backdrop" i]')]
+      .filter(visible);
+    if (backdrops.length > 0) {
+      backdrops[backdrops.length - 1].click();
+      await wait(700);
+      return;
+    }
+
+    const dialogs = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .MuiDrawer-root')]
+      .filter(visible);
+    const dialogRect = dialogs.at(-1)?.getBoundingClientRect();
+    const points = [
+      [window.innerWidth - 24, window.innerHeight - 24],
+      [window.innerWidth - 24, 24],
+      [24, window.innerHeight - 24],
+      [24, 24],
+      [window.innerWidth / 2, window.innerHeight - 24],
+      [window.innerWidth - 24, window.innerHeight / 2]
+    ];
+
+    const rowRect = row.getBoundingClientRect();
+    for (const [x, y] of points) {
+      if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) continue;
+      if (dialogRect && x >= dialogRect.left && x <= dialogRect.right && y >= dialogRect.top && y <= dialogRect.bottom) continue;
+      if (x >= rowRect.left && x <= rowRect.right && y >= rowRect.top && y <= rowRect.bottom) continue;
+
+      const outsideElement = document.elementFromPoint(x, y);
+      if (!outsideElement || outsideElement.closest('button, input, textarea, select, a, [role="button"]')) continue;
+      outsideElement.dispatchEvent(new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: x,
+        clientY: y
+      }));
+      await wait(700);
+      return;
+    }
+
+    // 画面端に空き領域が見つからない時も、編集画面外クリックを通知します。
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    await wait(700);
+  };
+
   const applyToEveryone = async (amount) => {
     if (!Number.isInteger(amount) || amount <= 0 || amount > 999999) {
       throw new Error('減少値は1以上の整数で指定してください。');
@@ -74,12 +120,13 @@
           throw new Error(`${index + 1}件目のHP減少ボタン（${SELECTORS.hpDecrease}）が見つかりません。`);
         }
         decreaseButton.click();
-        await wait(100);
+        // CCFOLIAの状態更新が反映される時間を確保してから次のクリックへ進みます。
+        await wait(250);
       }
 
       const rowText = target.row.textContent?.replace(/\s+/g, ' ').trim() || `HP行${index + 1}`;
       log(`${index + 1}/${initialRows.length}件目 (${rowText}) を${amount}減らしました。`);
-      await wait(180);
+      await clickOutsideEditor(target.row);
     }
 
     log('全キャラクターのHP減少が完了しました。');
