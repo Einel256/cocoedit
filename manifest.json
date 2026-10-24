@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "CCFOLIA 全員HP減少",
+  "version": "1.0.0",
+  "description": "CCFOLIAの盤面キャラクター全員にHP減少コマンドを送信する非公式拡張機能",
+  "permissions": ["tabs"],
+  "host_permissions": ["https://ccfolia.com/*"],
+  "action": {
+    "default_title": "CCFOLIA 全員HP減少"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://ccfolia.com/rooms/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
