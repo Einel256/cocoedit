@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const LOG_PREFIX = '[CCFOLIA 全員HP減少]';
+  const LOG_PREFIX = '[CCFOLIA ステータス変更]';
   const ROOM_URL_PATTERN = 'https://ccfolia.com/rooms/*';
   const log = (...args) => console.info(LOG_PREFIX, ...args);
   const error = (...args) => console.error(LOG_PREFIX, ...args);
@@ -13,7 +13,7 @@
         url: chrome.runtime.getURL('control.html'),
         type: 'popup',
         width: 380,
-        height: 300,
+        height: 720,
         focused: true
       });
     } catch (reason) {
@@ -29,7 +29,7 @@
   };
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message?.type !== 'CCFOLIA_APPLY_HP') return undefined;
+    if (!['CCFOLIA_APPLY_STATUS', 'CCFOLIA_ACQUIRE_CHARACTERS'].includes(message?.type)) return undefined;
 
     (async () => {
       try {
@@ -37,8 +37,13 @@
         const roomTab = await findRoomTab();
         log('操作対象タブ:', roomTab.id, roomTab.url);
         const result = await chrome.tabs.sendMessage(roomTab.id, {
-          type: 'CCFOLIA_APPLY_HP_IN_ROOM',
-          amount: message.amount
+          type: message.type === 'CCFOLIA_ACQUIRE_CHARACTERS'
+            ? 'CCFOLIA_ACQUIRE_CHARACTERS_IN_ROOM'
+            : 'CCFOLIA_APPLY_STATUS_IN_ROOM',
+          metricKey: message.metricKey,
+          operation: message.operation,
+          amount: message.amount,
+          characterIds: message.characterIds
         });
         sendResponse(result);
       } catch (reason) {

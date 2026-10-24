@@ -3,18 +3,52 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CCFOLIA 全員HP減少</title>
+    <title>CCFOLIA ステータス変更</title>
     <link rel="stylesheet" href="control.css">
   </head>
   <body>
     <main>
-      <h1>CCFOLIA 全員HP減少</h1>
-      <p>開いているCCFOLIAルームの盤面キャラクターを対象にします。</p>
-      <label for="amount">減少値</label>
-      <input id="amount" type="number" min="1" step="1" value="1">
-      <button id="run" type="button">実行</button>
+      <h1>CCFOLIA ステータス変更</h1>
+      <button id="acquire" type="button">キャラ情報を取得</button>
+      <div id="characters" role="group" aria-label="操作するキャラクター"></div>
+      <section class="choice-section" aria-labelledby="metric-title">
+        <h2 id="metric-title">対象ステータス</h2>
+        <div id="metric-options" class="button-group" role="group" aria-label="対象ステータス">
+          <button type="button" class="choice-button is-selected" data-value="hp" aria-pressed="true">HP</button>
+          <button type="button" class="choice-button" data-value="mp" aria-pressed="false">MP</button>
+          <button type="button" class="choice-button" data-value="san" aria-pressed="false">SAN</button>
+        </div>
+      </section>
+      <section class="choice-section" aria-labelledby="operation-title">
+        <h2 id="operation-title">操作方法</h2>
+        <div id="operation-options" class="button-group" role="group" aria-label="操作方法">
+          <button type="button" class="choice-button is-selected" data-value="decrease" aria-pressed="true">減らす</button>
+          <button type="button" class="choice-button" data-value="increase" aria-pressed="false">増やす</button>
+          <button type="button" class="choice-button" data-value="set" aria-pressed="false">指定値</button>
+        </div>
+      </section>
+      <div class="amount-row">
+        <label id="amount-label" for="amount">設定値</label>
+        <input id="amount" type="number" min="0" step="1" value="1">
+        <button id="run" class="run-button" type="button">実行</button>
+      </div>
+      <div class="quick-amount" role="group" aria-label="値を選択">
+        <span>クイック選択</span>
+        <div id="amount-options" class="amount-options">
+          <button type="button" class="amount-choice is-selected" data-value="1" aria-pressed="true">1</button>
+          <button type="button" class="amount-choice" data-value="2" aria-pressed="false">2</button>
+          <button type="button" class="amount-choice" data-value="3" aria-pressed="false">3</button>
+          <button type="button" class="amount-choice" data-value="4" aria-pressed="false">4</button>
+          <button type="button" class="amount-choice" data-value="5" aria-pressed="false">5</button>
+          <button type="button" class="amount-choice" data-value="6" aria-pressed="false">6</button>
+          <button type="button" class="amount-choice" data-value="7" aria-pressed="false">7</button>
+          <button type="button" class="amount-choice" data-value="8" aria-pressed="false">8</button>
+          <button type="button" class="amount-choice" data-value="9" aria-pressed="false">9</button>
+          <button type="button" class="amount-choice" data-value="10" aria-pressed="false">10</button>
+        </div>
+      </div>
       <output id="status" role="status">待機中</output>
-      <small>HPラベルを正確に確認できない場合は安全のため停止します。</small>
+      <small>増加・指定値は最大値を超えないよう制限します。各キャラクターの編集画面を閉じて反映を待ってから次へ進みます。</small>
     </main>
     <script src="control.js"></script>
   </body>
