@@ -5,6 +5,7 @@
   const ROOM_URL_PATTERN = 'https://ccfolia.com/rooms/*';
   const log = (...args) => console.info(LOG_PREFIX, ...args);
   const error = (...args) => console.error(LOG_PREFIX, ...args);
+  let commandMapWrite = Promise.resolve();
 
   // 拡張機能アイコンから、サイト内ではなく専用の制御ウィンドウを開きます。
   chrome.action.onClicked.addListener(async () => {
@@ -29,6 +30,19 @@
   };
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type === 'CCFOLIA_SAVE_COMMAND_MAP') {
+      commandMapWrite = commandMapWrite.catch(() => {}).then(() => chrome.storage.local.set({ ccfoliaCommandMap: message.commandMap ?? {} }));
+      commandMapWrite
+        .then(() => sendResponse({ ok: true }))
+        .catch((reason) => sendResponse({ ok: false, error: String(reason) }));
+      return true;
+    }
+    if (message?.type === 'CCFOLIA_GET_COMMAND_MAP') {
+      commandMapWrite.then(() => chrome.storage.local.get('ccfoliaCommandMap'))
+        .then((stored) => sendResponse({ ok: true, commandMap: stored.ccfoliaCommandMap ?? {} }))
+        .catch((reason) => sendResponse({ ok: false, error: String(reason) }));
+      return true;
+    }
     if (!['CCFOLIA_APPLY_STATUS', 'CCFOLIA_ACQUIRE_CHARACTERS'].includes(message?.type)) return undefined;
 
     (async () => {

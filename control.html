@@ -10,7 +10,20 @@
     <main>
       <h1>CCFOLIA ステータス変更</h1>
       <button id="acquire" type="button">キャラ情報を取得</button>
-      <div id="characters" role="group" aria-label="操作するキャラクター"></div>
+      <section class="choice-section" aria-labelledby="character-mode-title">
+        <h2 id="character-mode-title">キャラクター選択モード</h2>
+        <div id="character-mode-options" class="button-group" role="group" aria-label="キャラクター選択モード">
+          <button type="button" class="choice-button is-selected" data-mode="multiple" aria-pressed="true">複数選択</button>
+          <button type="button" class="choice-button" data-mode="single" aria-pressed="false">一人だけ</button>
+        </div>
+      </section>
+      <div id="characters" role="group" aria-label="ステータス変更するキャラクター"></div>
+      <section class="command-section" aria-labelledby="command-title">
+        <h2 id="command-title">チャットコマンド</h2>
+        <textarea id="commands" rows="3" spellcheck="false" placeholder="1s10&#10;1,2m-5&#10;3h-2"></textarea>
+        <button id="execute-commands" type="button">コマンドを実行</button>
+        <small>s=SAN、m=MP、h=HP。どの項目も数値を続けると増加、空白を入れると減少（1s10 / 1s 10、1m10 / 1m 10、1h10 / 1h 10）。Enterで実行、Shift+Enterで改行します。</small>
+      </section>
       <section class="choice-section" aria-labelledby="metric-title">
         <h2 id="metric-title">対象ステータス</h2>
         <div id="metric-options" class="button-group" role="group" aria-label="対象ステータス">
@@ -45,6 +58,16 @@
           <button type="button" class="amount-choice" data-value="8" aria-pressed="false">8</button>
           <button type="button" class="amount-choice" data-value="9" aria-pressed="false">9</button>
           <button type="button" class="amount-choice" data-value="10" aria-pressed="false">10</button>
+          <button type="button" class="amount-choice" data-value="11" aria-pressed="false">11</button>
+          <button type="button" class="amount-choice" data-value="12" aria-pressed="false">12</button>
+          <button type="button" class="amount-choice" data-value="13" aria-pressed="false">13</button>
+          <button type="button" class="amount-choice" data-value="14" aria-pressed="false">14</button>
+          <button type="button" class="amount-choice" data-value="15" aria-pressed="false">15</button>
+          <button type="button" class="amount-choice" data-value="16" aria-pressed="false">16</button>
+          <button type="button" class="amount-choice" data-value="17" aria-pressed="false">17</button>
+          <button type="button" class="amount-choice" data-value="18" aria-pressed="false">18</button>
+          <button type="button" class="amount-choice" data-value="19" aria-pressed="false">19</button>
+          <button type="button" class="amount-choice" data-value="20" aria-pressed="false">20</button>
         </div>
       </div>
       <output id="status" role="status">待機中</output>

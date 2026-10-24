@@ -2,6 +2,7 @@
   'use strict';
 
   const LOG_PREFIX = '[CCFOLIA ステータス変更]';
+  const BUTTON_CLICK_INTERVAL_MS = 5;
   const METRICS = {
     hp: { label: 'HP', increase: 'button[aria-label="HPを増やす"]', decrease: 'button[aria-label="HPを減らす"]' },
     mp: { label: 'MP', increase: 'button[aria-label="MPを増やす"]', decrease: 'button[aria-label="MPを減らす"]' },
@@ -92,10 +93,13 @@
     if (hpRows.length === 0) throw new Error('キャラクターのHP表示行が見つかりませんでした。');
     const rawCharacters = [];
     for (let index = 0; index < hpRows.length; index += 1) {
-      const target = findMetricRows(METRICS.hp)[index];
-      if (!target) throw new Error('キャラクター情報の取得中に表示が変わりました。もう一度取得してください。');
+      // 盤面の全DOMを毎キャラクター再走査せず、開始時の一覧を使います。
+      const target = hpRows[index];
+      if (!target.row.isConnected || !visible(target.row)) {
+        throw new Error('キャラクター情報の取得中に表示が変わりました。もう一度取得してください。');
+      }
       target.row.click();
-      await wait(60);
+      await wait(40);
       let name;
       try {
         const editor = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .MuiDrawer-root, .MuiPopover-root')]
@@ -209,11 +213,15 @@
     if (targets.length === 0) throw new Error('操作対象のキャラクターを選択してください。');
 
     let limitedCount = 0;
-    for (const { index } of targets) {
-      let target = findMetricRows(metric)[index];
-      if (!target) throw new Error(`${index + 1}件目の${metric.label}表示行が見つかりません。`);
+    for (let targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
+      const { index, target } = targets[targetIndex];
+      // 対象行の一覧は操作開始時に取得済みです。各キャラクターごとの
+      // 全DOM走査を避け、画面変化があった場合は安全に停止します。
+      if (!target.row.isConnected || !visible(target.row)) {
+        throw new Error(`${index + 1}件目の${metric.label}表示行が見つかりません。`);
+      }
       target.row.click();
-      await wait(60);
+      await wait(40);
       try {
         let direction = operation;
         let clicks = amount;
@@ -225,10 +233,14 @@
           direction = difference >= 0 ? 'increase' : 'decrease';
           clicks = direction === 'increase'
             ? Math.floor(Math.min(difference, Math.max(0, maxValue - currentValue)))
-            : Math.ceil(Math.abs(difference));
+            : Math.min(Math.ceil(Math.abs(difference)), Math.floor(Math.max(0, currentValue)));
         } else if (operation === 'increase') {
           const { currentValue, maxValue } = readCurrentStatus(target, metric);
           clicks = Math.floor(Math.min(amount, Math.max(0, maxValue - currentValue)));
+          if (clicks < amount) limitedCount += 1;
+        } else if (operation === 'decrease') {
+          const { currentValue } = readCurrentStatus(target, metric);
+          clicks = Math.floor(Math.min(amount, Math.max(0, currentValue)));
           if (clicks < amount) limitedCount += 1;
         }
 
@@ -237,10 +249,10 @@
           const button = findButton(target, selector);
           if (!button) throw new Error(`${index + 1}件目の${metric.label}${direction === 'increase' ? '増加' : '減少'}ボタンが見つかりません。`);
           button.click();
-          await wait(60);
+          await wait(BUTTON_CLICK_INTERVAL_MS);
         }
         const rowText = target.row.textContent?.replace(/\s+/g, ' ').trim() || `${metric.label}行${index + 1}`;
-        log(`${targets.findIndex((item) => item.index === index) + 1}/${targets.length}件目 (${rowText}) を処理しました。`);
+        log(`${targetIndex + 1}/${targets.length}件目 (${rowText}) を処理しました。`);
       } finally {
         // エラー時も含め、開いた編集画面を閉じて反映を待ちます。
         await clickOutsideEditor(target.row);
@@ -250,6 +262,105 @@
     log(`全キャラクターの${metric.label}変更が完了しました。`);
     return { ok: true, count: targets.length, metric: metric.label, limitedCount };
   };
+
+  const parseChatCommands = (text) => {
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (!lines.length) return null;
+    const commands = [];
+    for (const line of lines) {
+      const match = line.match(/^(\d+(?:(?:\s*,\s*|\s+)\d+)*)\s*(hp|mp|san|h|m|s)(\s*)([+-]?\d+)(?:\s+.*)?$/i);
+      if (!match) return null;
+      const amountText = match[4];
+      const amount = Number(amountText);
+      const signedAmount = amountText.startsWith('-') ? amount : amountText.startsWith('+') ? amount : match[3] ? -amount : amount;
+      if (!Number.isSafeInteger(amount) || amount === 0 || amount > 999999) return null;
+      commands.push({
+        numbers: [...new Set(match[1].split(/[\s,]+/))],
+        metricKey: ({ hp: 'hp', h: 'hp', mp: 'mp', m: 'mp', san: 'san', s: 'san' })[match[2].toLowerCase()],
+        operation: signedAmount < 0 ? 'decrease' : 'increase',
+        amount: Math.abs(signedAmount)
+      });
+    }
+    return commands;
+  };
+
+  const findChatTextarea = (target) => {
+    if (!(target instanceof HTMLTextAreaElement)
+      || target.name !== 'text'
+      || target.placeholder !== 'メッセージを入力'
+      || target.readOnly
+      || !visible(target)) return null;
+    return target;
+  };
+
+  const clearReactTextarea = (textarea) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    setter?.call(textarea, '');
+    textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContent', data: null }));
+  };
+
+  let handlingChatCommand = false;
+  const executeChatCommand = async (textarea, commands) => {
+    if (handlingChatCommand) return;
+    handlingChatCommand = true;
+    try {
+      const stored = await chrome.runtime.sendMessage({ type: 'CCFOLIA_GET_COMMAND_MAP' });
+      const commandMap = stored?.commandMap ?? {};
+      const prepared = commands.map((command) => ({
+        ...command,
+        characterIds: command.numbers.map((number) => commandMap[number])
+      }));
+      const missing = prepared.flatMap((command, index) => command.characterIds.some((id) => !id)
+        ? commands[index].numbers.filter((number) => !commandMap[number]) : []);
+      if (!stored?.ok || missing.length) {
+        error(!stored?.ok ? '番号割り当てを取得できません。拡張機能を開いてキャラクター情報を取得してください。' : `番号${[...new Set(missing)].join('、')}のキャラクターを割り当ててください。`);
+        handlingChatCommand = false;
+        return;
+      }
+
+      clearReactTextarea(textarea);
+      for (const command of prepared) {
+        const result = await applyToEveryone(command);
+        if (!result?.ok) throw new Error('コマンドの実行に失敗しました。');
+      }
+      log(`${prepared.length}件のチャットコマンドを実行しました。`);
+    } catch (reason) {
+      error('チャットコマンドを実行できませんでした。', reason);
+    } finally {
+      handlingChatCommand = false;
+    }
+  };
+
+  const interceptChatCommand = (event, textarea) => {
+    if (handlingChatCommand) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    const commands = parseChatCommands(textarea.value);
+    if (!commands) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void executeChatCommand(textarea, commands);
+  };
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    const textarea = findChatTextarea(event.target);
+    if (textarea) interceptChatCommand(event, textarea);
+  }, true);
+
+  document.addEventListener('submit', (event) => {
+    const textarea = findChatTextarea(document.activeElement);
+    if (textarea) interceptChatCommand(event, textarea);
+  }, true);
+
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest?.('button');
+    if (!button || !/送信|send/i.test(`${button.getAttribute('aria-label') ?? ''} ${button.title ?? ''} ${button.textContent ?? ''}`)) return;
+    const textarea = findChatTextarea(document.querySelector('textarea[name="text"][placeholder="メッセージを入力"]'));
+    if (textarea) interceptChatCommand(event, textarea);
+  }, true);
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'CCFOLIA_ACQUIRE_CHARACTERS_IN_ROOM') {

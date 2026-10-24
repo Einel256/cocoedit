@@ -27,9 +27,16 @@ button:focus-visible, input:focus-visible { outline: 2px solid #aaa; outline-off
 button:disabled { cursor: wait; opacity: .55; }
 #acquire { padding: 7px 11px; }
 #characters { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; max-height: 220px; overflow: auto; margin: 8px 0 13px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: #252525; }
-.character-choice { min-width: 0; min-height: 36px; padding: 6px 9px; overflow-wrap: anywhere; color: #e6e6e6; text-align: left; }
+.character-row { display: flex; gap: 6px; min-width: 0; }
+.character-row .character-choice { flex: 1; }
+.character-number { width: 62px; padding: 4px; color: var(--text); border: 1px solid var(--line); border-radius: 6px; background: #090909; }
+.character-choice { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; min-height: 36px; padding: 6px 9px; overflow-wrap: anywhere; color: #e6e6e6; text-align: left; }
 .character-choice.is-selected { color: #fff; border-color: #aaa; background: #555; font-weight: 700; }
 .character-choice.is-selected:hover { background: #626262; }
+.command-section { margin: 12px 0; }
+.command-section h2 { margin-top: 0; }
+.command-section textarea { display: block; width: 100%; min-height: 84px; padding: 8px; resize: vertical; color: var(--text); border: 1px solid var(--line); border-radius: 6px; background: #090909; font: 19px/1.5 ui-monospace, monospace; }
+.command-section button { width: 100%; min-height: 34px; margin-top: 6px; }
 .choice-section { margin: 11px 0; }
 .button-group { display: flex; gap: 6px; }
 .choice-button { flex: 1; min-height: 35px; padding: 6px 9px; color: #e0e0e0; }
