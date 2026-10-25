@@ -16,6 +16,15 @@
   const log = (...args) => console.info(LOG_PREFIX, ...args);
   const error = (...args) => console.error(LOG_PREFIX, ...args);
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const waitFor = async (predicate, timeout = 400) => {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const result = predicate();
+      if (result) return result;
+      await wait(12);
+    }
+    return predicate();
+  };
 
   const visible = (element) => {
     if (!element) return false;
@@ -268,17 +277,32 @@
     if (!lines.length) return null;
     const commands = [];
     for (const line of lines) {
-      const match = line.match(/^(\d+(?:(?:\s*,\s*|\s+)\d+)*)\s*(hp|mp|san|h|m|s)(\s*)([+-]?\d+)(?:\s+.*)?$/i);
+      const match = line.match(/^(\d+(?:(?:\s*,\s*|\s+)\d+)*)\s*(hp|mp|san|h|m|s)(\s*)(=|[+-])?(\s*)(\d+)$/i);
       if (!match) return null;
-      const amountText = match[4];
-      const amount = Number(amountText);
-      const signedAmount = amountText.startsWith('-') ? amount : amountText.startsWith('+') ? amount : match[3] ? -amount : amount;
-      if (!Number.isSafeInteger(amount) || amount === 0 || amount > 999999) return null;
+      const amount = Number(match[6]);
+      if (!Number.isSafeInteger(amount) || amount > 999999) return null;
+      const numberText = match[1].trim();
+      let numbers;
+      if (/^[1-9]{2,}$/.test(numberText)) {
+        numbers = [...numberText];
+      } else {
+        numbers = numberText.split(/[\s,]+/);
+      }
+      if (numbers.some((number) => !/^[1-9]$/.test(number))) return null;
+      const operator = match[4];
+      if (operator !== '=' && amount === 0) return null;
+      const operation = operator === '='
+        ? 'set'
+        : operator === '-'
+          ? 'decrease'
+          : operator === '+'
+            ? 'increase'
+            : match[3] ? 'decrease' : 'increase';
       commands.push({
-        numbers: [...new Set(match[1].split(/[\s,]+/))],
+        numbers: [...new Set(numbers)],
         metricKey: ({ hp: 'hp', h: 'hp', mp: 'mp', m: 'mp', san: 'san', s: 'san' })[match[2].toLowerCase()],
-        operation: signedAmount < 0 ? 'decrease' : 'increase',
-        amount: Math.abs(signedAmount)
+        operation,
+        amount
       });
     }
     return commands;
@@ -289,7 +313,7 @@
       || target.name !== 'text'
       || target.placeholder !== 'メッセージを入力'
       || target.readOnly
-      || !visible(target)) return null;
+      || !target.isConnected) return null;
     return target;
   };
 
@@ -362,6 +386,385 @@
     if (textarea) interceptChatCommand(event, textarea);
   }, true);
 
+  const normalizedText = (element) => (element?.innerText || element?.textContent || '').replace(/\s+/g, ' ').trim();
+  const findVisibleChatTextarea = () => [...document.querySelectorAll('textarea[name="text"][placeholder="メッセージを入力"]')]
+    .find((textarea) => findChatTextarea(textarea));
+  const chatDrawerCloseButton = () => [...document.querySelectorAll('button[aria-label="チャットウィンドウをとじる"]')].find(visible);
+  const chatDrawerOpenButton = () => [...document.querySelectorAll('button[aria-label="チャットウィンドウを開く"]')].find(visible);
+  const chatComposerMounted = () => {
+    const textarea = [...document.querySelectorAll('textarea[name="text"][placeholder="メッセージを入力"]')]
+      .find((element) => !element.readOnly && element.isConnected);
+    return Boolean(textarea?.closest('form')?.querySelector('button[type="submit"]'));
+  };
+  const chatDrawerIsOpen = () => {
+    const toggle = chatDrawerOpenButton();
+    if (toggle?.hasAttribute('aria-expanded')) return toggle.getAttribute('aria-expanded') === 'true';
+    return Boolean(chatDrawerCloseButton());
+  };
+  const withChatDrawer = async (callback) => {
+    // The docked CCFOLIA chat form stays mounted when collapsed. Use it directly
+    // to avoid opening and closing the drawer for every message.
+    const shouldOpen = !chatComposerMounted();
+    if (!shouldOpen) return callback();
+    const wasClosed = !chatDrawerIsOpen();
+    if (wasClosed) {
+      const openButton = chatDrawerOpenButton();
+      if (!openButton) throw new Error('CCFOLIAのチャットウィンドウを開けません。');
+      openButton.click();
+      await wait(180);
+    }
+    try {
+      return await callback();
+    } finally {
+      if (wasClosed) {
+        const closeButton = chatDrawerCloseButton();
+        if (closeButton) {
+          closeButton.click();
+          await wait(120);
+        }
+      }
+    }
+  };
+
+  const getCharacterPickerOptions = async () => {
+    const selector = document.querySelector('button[aria-label="キャラクター選択"]');
+    if (!selector || !selector.isConnected) return { selector, options: [], opened: false };
+    const listSelector = 'ul.MuiList-root:has(.MuiListItemButton-root[role="button"])';
+    let characterLists = [...document.querySelectorAll(listSelector)].filter(visible);
+    const alreadyOpen = characterLists.length > 0;
+    const interactiveSelector = '[role="option"], [role="menuitem"], button, [role="button"], li, [tabindex="0"]';
+    const visibleBefore = new Set([...document.querySelectorAll('*')].filter(visible));
+    const opened = !alreadyOpen;
+    if (opened) {
+      const avatar = selector.querySelector('img.MuiAvatar-img');
+      if (avatar) avatar.click();
+      else selector.click();
+      characterLists = await waitFor(() => {
+        const lists = [...document.querySelectorAll(listSelector)].filter(visible);
+        return lists.length ? lists : null;
+      }, 400) ?? [];
+    }
+    const characterList = characterLists.at(-1);
+    if (characterList) {
+      const options = [...characterList.querySelectorAll('.MuiListItemButton-root[role="button"]')]
+        .map((element, index) => {
+          const image = element.querySelector('.MuiListItemAvatar img.MuiAvatar-img');
+          const name = element.querySelector('.MuiListItemText-primary')?.textContent?.trim()
+            || element.getAttribute('aria-label')
+            || normalizedText(element);
+          const state = element.querySelector('.MuiListItemText-secondary')?.textContent?.trim() || '';
+          return { name, key: image?.currentSrc || image?.src || '', state, element, index };
+        })
+        .filter((option) => option.name);
+      return { selector, options, opened };
+    }
+
+    let roots = [...document.querySelectorAll('[role="dialog"], [role="listbox"], [role="menu"], .MuiPopover-root, .MuiMenu-root')]
+      .filter(visible);
+    const root = roots.at(-1);
+    const explicitOptions = [...document.querySelectorAll('[role="option"], [role="menuitem"]')].filter(visible);
+    const pointerTargets = (scope) => [...scope.querySelectorAll('*')].filter((element) => {
+      const style = getComputedStyle(element);
+      return style.cursor === 'pointer' && (element.querySelector('img') || normalizedText(element).length > 0);
+    });
+    const pool = root
+      ? [...new Set([...root.querySelectorAll(interactiveSelector), ...pointerTargets(root)])]
+      : explicitOptions.length
+        ? explicitOptions
+        : [...new Set([
+          ...[...document.querySelectorAll(interactiveSelector)].filter((element) => !visibleBefore.has(element)),
+          ...pointerTargets(document).filter((element) => !visibleBefore.has(element))
+        ])];
+    const options = pool
+      .filter((element) => element !== selector && visible(element))
+      .map((element, index) => {
+        const image = element.querySelector('img');
+        const ownImage = element.matches('img') ? element : null;
+        const name = element.getAttribute('aria-label') || element.getAttribute('title')
+          || image?.alt || ownImage?.alt || normalizedText(element);
+        return { name, key: image?.currentSrc || image?.src || ownImage?.currentSrc || ownImage?.src || '', element, index };
+      })
+      .filter((option) => option.name || option.key)
+      .filter((option) => option.name.length < 100)
+      .filter((option, index, all) => all.findIndex((candidate) =>
+        candidate.name === option.name && candidate.key === option.key) === index);
+    return { selector, options, opened };
+  };
+
+  const closeCharacterPicker = async (selector, opened = true) => {
+    if (opened && selector?.isConnected) selector.click();
+    await wait(60);
+  };
+
+  let cachedChatState = null;
+  const getChatState = async ({ force = true, includeCharacters = false } = {}) => {
+    if (!force && !chatDrawerCloseButton() && cachedChatState) return cachedChatState;
+    const state = await withChatDrawer(async () => {
+    const tabs = [...document.querySelectorAll('[role="tablist"] button')]
+      .filter((button) => button.isConnected)
+      .map((button, index) => ({
+        index,
+        name: normalizedText(button),
+        selected: button.getAttribute('aria-selected') === 'true' || button.classList.contains('Mui-selected')
+      }))
+      .filter((tab) => tab.name);
+    const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
+    const messages = logList
+      ? [...logList.querySelectorAll('[data-index]')]
+        .filter((element) => element.isConnected)
+        .map((element) => {
+          const item = element.querySelector('.MuiListItem-root') || element;
+          const header = item.querySelector('.MuiListItemText-primary');
+          const date = header?.querySelector('.MuiTypography-caption');
+          const speaker = header
+            ? [...header.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent).join('').trim()
+            : '';
+          const secondary = item.querySelector('.MuiListItemText-secondary');
+          let text = secondary?.innerText?.trim() || '';
+          if (!text) {
+            // Dice result rows can use a different MUI layout without the usual
+            // secondary text node. Exclude the author/date header so it does not
+            // get copied into the message body as if it were dice output.
+            const body = item.cloneNode(true);
+            body.querySelectorAll('.MuiListItemText-primary, [class*="MuiListItemAvatar"]').forEach((element) => element.remove());
+            text = normalizedText(body);
+          }
+          const avatarImage = item.querySelector('[class*="MuiListItemAvatar"] img.MuiAvatar-img, [class*="MuiListItemAvatar"] img, img[alt="avatar"]');
+          const avatar = avatarImage?.getAttribute('src')
+            || avatarImage?.getAttribute('data-src')
+            || avatarImage?.currentSrc
+            || avatarImage?.src
+            || '';
+          return { speaker, date: date?.textContent?.replace(/^\s*-\s*/, '').trim() || '', text, avatar };
+        })
+        .filter((message) => message.text || message.speaker)
+      : [];
+    const speaker = document.querySelector('input[name="name"][placeholder="noname"]');
+    const speakerImage = document.querySelector('button[aria-label="キャラクター選択"] img.MuiAvatar-img');
+    const diceButtons = [...document.querySelectorAll('button[aria-label^="D"]')]
+      .filter((button) => button.isConnected)
+      .map((button) => button.getAttribute('aria-label'))
+      .filter((label) => /^D(?:2|3|4|6|8|10|12|20|100)$/.test(label));
+    const picker = includeCharacters ? await getCharacterPickerOptions() : null;
+    if (picker) await closeCharacterPicker(picker.selector, picker.opened);
+    return {
+      ok: true,
+      tabs,
+      messages,
+      speakerName: speaker?.value ?? '',
+      speakerAvatar: speakerImage?.currentSrc || speakerImage?.src || '',
+      draftText: findVisibleChatTextarea()?.value ?? '',
+      characters: picker
+        ? picker.options.map(({ name, key, state, index }) => ({ name, key, state, index }))
+        : cachedChatState?.characters ?? [],
+      diceButtons: [...new Set(diceButtons)]
+    };
+    });
+    cachedChatState = state;
+    return state;
+  };
+
+  const setReactInputValue = (input, value) => {
+    const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+
+  const clickChatTab = (index) => {
+    const tabs = [...document.querySelectorAll('[role="tablist"] button')].filter((tab) => tab.isConnected);
+    const tab = tabs[Number(index)];
+    if (!tab) throw new Error('指定したチャットタブが見つかりません。');
+    tab.click();
+  };
+
+  const sendChatText = async ({ text, tabIndex }) => withChatDrawer(async () => {
+    if (Number.isInteger(Number(tabIndex))) clickChatTab(tabIndex);
+    const textarea = findVisibleChatTextarea();
+    if (!textarea) throw new Error('CCFOLIAのメッセージ入力欄が見つかりません。');
+    const form = textarea.closest('form');
+    const sendButton = form?.querySelector('button[type="submit"]');
+    if (!sendButton || !sendButton.isConnected) throw new Error('CCFOLIAの送信ボタンが見つかりません。');
+    const messageText = String(text ?? '');
+    setReactInputValue(textarea, messageText);
+    sendButton.click();
+    // Wait for CCFOLIA's React submit handler to clear the draft before the
+    // control window immediately reads the updated room log.
+    await waitFor(() => textarea.isConnected && textarea.value === '', 1500);
+    if (!parseChatCommands(messageText)) {
+      const expectedText = messageText.replace(/\s+/g, ' ').trim();
+      await waitFor(() => {
+        const entries = [...document.querySelectorAll('ul[aria-label="ルームチャット"][role="log"] [data-index]')];
+        const latest = entries.at(-1);
+        return latest && normalizedText(latest).includes(expectedText);
+      }, 1800);
+    } else {
+      await wait(100);
+    }
+    return { ok: true };
+  });
+
+  const selectChatTab = async ({ index }) => withChatDrawer(async () => {
+    clickChatTab(index);
+    await wait(20);
+    return { ok: true };
+  });
+
+  const setChatSpeaker = async ({ name }) => withChatDrawer(async () => {
+    const input = document.querySelector('input[name="name"][placeholder="noname"]');
+    if (!input || !input.isConnected) throw new Error('発言名の入力欄が見つかりません。');
+    setReactInputValue(input, String(name ?? ''));
+    return { ok: true };
+  });
+
+  const sameImage = (left, right) => {
+    if (!left || !right) return false;
+    try {
+      return new URL(left, location.href).pathname === new URL(right, location.href).pathname;
+    } catch {
+      return left === right;
+    }
+  };
+
+  const selectChatCharacter = async ({ name, key }) => withChatDrawer(async () => {
+    const picker = await getCharacterPickerOptions();
+    const wanted = String(name ?? '').replace(/\s+/g, ' ').trim();
+    const option = picker.options.find((candidate) => (key && sameImage(candidate.key, key)) || candidate.name === wanted);
+    if (!option) {
+      await closeCharacterPicker(picker.selector, picker.opened);
+      throw new Error(`「${wanted}」をキャラクター選択メニューから見つけられませんでした。`);
+    }
+    option.element.click();
+    await waitFor(() => {
+      const input = document.querySelector('input[name="name"][placeholder="noname"]');
+      return input && input.value === option.name ? input : null;
+    }, 250);
+    const speakerInput = document.querySelector('input[name="name"][placeholder="noname"]');
+    if (speakerInput && option.name) setReactInputValue(speakerInput, option.name);
+    return { ok: true };
+  });
+
+  const clickDiceShortcut = ({ label, count }) => {
+    const sides = String(label ?? '').match(/^D(2|3|4|6|8|10|12|20|100)$/)?.[1];
+    const diceCount = Number(count);
+    if (!sides || !Number.isInteger(diceCount) || diceCount < 1 || diceCount > 4) {
+      throw new Error('ダイスはD2、D3、D4、D6、D8、D10、D12、D20、D100から1〜4個を指定してください。');
+    }
+    return sendChatText({ text: `${diceCount}${label}` });
+  };
+
+  const autoSkip = { active: false, timer: null, root: null, intervalMs: 1000 };
+  const findMessageCloseButton = (root) => [...root.querySelectorAll('button')]
+    .filter(visible)
+    .find((button) => button.getAttribute('aria-label') === '閉じる'
+      || button.querySelector('svg[data-testid="CloseIcon"]'));
+  const findSkipDialog = () => {
+    const skipButtons = [...document.querySelectorAll('button[aria-label="スキップ"]')].filter(visible);
+    for (const skip of skipButtons) {
+      let root = skip.parentElement;
+      for (let depth = 0; root && depth < 12; depth += 1, root = root.parentElement) {
+        const close = findMessageCloseButton(root);
+        if (close) return { root, skip, close };
+      }
+    }
+    return null;
+  };
+  const stopAutoSkip = (status = '自動スキップを停止しました。') => {
+    if (autoSkip.timer !== null) clearTimeout(autoSkip.timer);
+    autoSkip.active = false;
+    autoSkip.timer = null;
+    autoSkip.root = null;
+    autoSkip.lastStatus = status;
+    log(status);
+    return { ok: true, running: false, status };
+  };
+  const scheduleAutoSkip = () => {
+    const delay = autoSkip.root?.isConnected ? autoSkip.intervalMs : 250;
+    autoSkip.timer = setTimeout(async () => {
+      if (!autoSkip.active) return;
+      const wasWaitingForMessage = !autoSkip.root?.isConnected;
+      const target = findSkipDialog();
+      if (target) {
+        autoSkip.root = target.root;
+        if (wasWaitingForMessage) {
+          scheduleAutoSkip();
+          return;
+        }
+      }
+      const root = autoSkip.root;
+      if (!target && !root?.isConnected) {
+        autoSkip.root = null;
+        scheduleAutoSkip();
+        return;
+      }
+      if (!root?.isConnected) {
+        stopAutoSkip('メッセージ画面が閉じられたため、自動スキップを停止しました。');
+        return;
+      }
+      const close = target?.close
+        ?? findMessageCloseButton(root);
+      if (!close) {
+        stopAutoSkip('閉じるボタンが見つからないため、自動スキップを停止しました。');
+        return;
+      }
+      const skip = target?.skip
+        ?? [...root.querySelectorAll('button[aria-label="スキップ"]')].find(visible);
+      if (skip && !skip.disabled && skip.getAttribute('aria-disabled') !== 'true') {
+        skip.click();
+        scheduleAutoSkip();
+        return;
+      }
+
+      // A skip can briefly disappear while CCFOLIA advances to the next
+      // message. Re-query the current dialog before deciding it has finished.
+      const settled = await waitFor(() => {
+        const current = findSkipDialog();
+        if (current?.skip && !current.skip.disabled && current.skip.getAttribute('aria-disabled') !== 'true') {
+          autoSkip.root = current.root;
+          return { current };
+        }
+        return root.isConnected ? null : { gone: true };
+      }, 1200);
+      if (!autoSkip.active) return;
+      if (settled?.current) {
+        scheduleAutoSkip();
+        return;
+      }
+      if (settled?.gone || root.isConnected) {
+        const currentClose = findSkipDialog()?.close ?? findMessageCloseButton(root);
+        if (currentClose) currentClose.click();
+        stopAutoSkip('スキップ後にメッセージを閉じました。');
+        return;
+      }
+    }, delay);
+  };
+  const startAutoSkip = () => {
+    const seconds = 1;
+    const target = autoSkip.active ? null : findSkipDialog();
+    autoSkip.intervalMs = Math.round(seconds * 1000);
+    if (autoSkip.active) {
+      if (autoSkip.timer !== null) clearTimeout(autoSkip.timer);
+      autoSkip.timer = null;
+      autoSkip.lastStatus = `メッセージ自動削除ON（${seconds}秒間隔）`;
+      scheduleAutoSkip();
+      return { ok: true, running: true, intervalSeconds: seconds, status: autoSkip.lastStatus };
+    }
+    autoSkip.active = true;
+    autoSkip.root = target?.root ?? null;
+    autoSkip.lastStatus = target
+      ? `メッセージ自動削除ON（${seconds}秒間隔）`
+      : `メッセージ自動削除ON（表示を監視中）`;
+    scheduleAutoSkip();
+    return { ok: true, running: true, intervalSeconds: seconds, status: autoSkip.lastStatus };
+  };
+  const getAutoSkipStatus = () => ({
+    ok: true,
+    running: autoSkip.active,
+    intervalSeconds: autoSkip.intervalMs / 1000,
+    status: autoSkip.lastStatus || (autoSkip.active ? '自動スキップ中です。' : '停止中です。')
+  });
+
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'CCFOLIA_ACQUIRE_CHARACTERS_IN_ROOM') {
       acquireCharacters()
@@ -369,8 +772,36 @@
         .catch((reason) => sendResponse({ ok: false, error: reason instanceof Error ? reason.message : String(reason) }));
       return true;
     }
-    if (message?.type !== 'CCFOLIA_APPLY_STATUS_IN_ROOM') return undefined;
-    applyToEveryone(message)
+    if (message?.type === 'CCFOLIA_CHAT_GET_STATE_IN_ROOM') {
+      getChatState({ force: message.force !== false, includeCharacters: message.includeCharacters === true })
+        .then((result) => sendResponse(result))
+        .catch((reason) => sendResponse({ ok: false, error: reason instanceof Error ? reason.message : String(reason) }));
+      return true;
+    }
+    if (message?.type === 'CCFOLIA_AUTO_SKIP_STATUS_IN_ROOM') {
+      sendResponse(getAutoSkipStatus());
+      return undefined;
+    }
+    if (message?.type === 'CCFOLIA_AUTO_SKIP_START_IN_ROOM' || message?.type === 'CCFOLIA_AUTO_SKIP_STOP_IN_ROOM') {
+      try {
+        sendResponse(message.type === 'CCFOLIA_AUTO_SKIP_START_IN_ROOM'
+          ? startAutoSkip(message)
+          : stopAutoSkip());
+      } catch (reason) {
+        sendResponse({ ok: false, error: reason instanceof Error ? reason.message : String(reason) });
+      }
+      return undefined;
+    }
+    const actions = {
+      CCFOLIA_CHAT_SEND_IN_ROOM: sendChatText,
+      CCFOLIA_CHAT_SELECT_TAB_IN_ROOM: selectChatTab,
+      CCFOLIA_CHAT_SET_SPEAKER_IN_ROOM: setChatSpeaker,
+      CCFOLIA_CHAT_SELECT_CHARACTER_IN_ROOM: selectChatCharacter,
+      CCFOLIA_CHAT_DICE_IN_ROOM: clickDiceShortcut
+    };
+    const action = actions[message?.type];
+    if (!action) return undefined;
+    Promise.resolve(action(message))
       .then((result) => sendResponse(result))
       .catch((reason) => {
         const messageText = reason instanceof Error ? reason.message : String(reason);

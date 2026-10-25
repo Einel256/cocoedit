@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "CCFOLIA ステータス変更",
   "version": "1.0.0",
-  "description": "CCFOLIAの盤面キャラクター全員のHP・MP・SANを変更する非公式拡張機能",
+  "description": "CCFOLIAチャットの操作と、テキストコマンドによるHP・MP・SAN変更を行う拡張機能",
   "permissions": ["tabs", "storage"],
   "host_permissions": ["https://ccfolia.com/*"],
   "action": {

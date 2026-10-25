@@ -13,8 +13,8 @@
       await chrome.windows.create({
         url: chrome.runtime.getURL('control.html'),
         type: 'popup',
-        width: 380,
-        height: 720,
+        width: 600,
+        height: 820,
         focused: true
       });
     } catch (reason) {
@@ -43,21 +43,29 @@
         .catch((reason) => sendResponse({ ok: false, error: String(reason) }));
       return true;
     }
-    if (!['CCFOLIA_APPLY_STATUS', 'CCFOLIA_ACQUIRE_CHARACTERS'].includes(message?.type)) return undefined;
+    const forwardedTypes = new Set([
+      'CCFOLIA_ACQUIRE_CHARACTERS',
+      'CCFOLIA_CHAT_GET_STATE',
+      'CCFOLIA_CHAT_SEND',
+      'CCFOLIA_CHAT_SELECT_TAB',
+      'CCFOLIA_CHAT_SET_SPEAKER',
+      'CCFOLIA_CHAT_SELECT_CHARACTER',
+      'CCFOLIA_CHAT_DICE',
+      'CCFOLIA_AUTO_SKIP_START',
+      'CCFOLIA_AUTO_SKIP_STOP',
+      'CCFOLIA_AUTO_SKIP_STATUS'
+    ]);
+    if (!forwardedTypes.has(message?.type)) return undefined;
 
     (async () => {
       try {
         // 制御ウィンドウ自身ではなく、URLでCCFOLIAルームを明示的に探します。
         const roomTab = await findRoomTab();
         log('操作対象タブ:', roomTab.id, roomTab.url);
+        const { type, ...payload } = message;
         const result = await chrome.tabs.sendMessage(roomTab.id, {
-          type: message.type === 'CCFOLIA_ACQUIRE_CHARACTERS'
-            ? 'CCFOLIA_ACQUIRE_CHARACTERS_IN_ROOM'
-            : 'CCFOLIA_APPLY_STATUS_IN_ROOM',
-          metricKey: message.metricKey,
-          operation: message.operation,
-          amount: message.amount,
-          characterIds: message.characterIds
+          ...payload,
+          type: `${type}_IN_ROOM`
         });
         sendResponse(result);
       } catch (reason) {

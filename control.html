@@ -3,75 +3,48 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CCFOLIA ステータス変更</title>
+    <title>ルームチャット</title>
     <link rel="stylesheet" href="control.css">
   </head>
   <body>
     <main>
-      <h1>CCFOLIA ステータス変更</h1>
-      <button id="acquire" type="button">キャラ情報を取得</button>
-      <section class="choice-section" aria-labelledby="character-mode-title">
-        <h2 id="character-mode-title">キャラクター選択モード</h2>
-        <div id="character-mode-options" class="button-group" role="group" aria-label="キャラクター選択モード">
-          <button type="button" class="choice-button is-selected" data-mode="multiple" aria-pressed="true">複数選択</button>
-          <button type="button" class="choice-button" data-mode="single" aria-pressed="false">一人だけ</button>
-        </div>
+      <h1>ルームチャット</h1>
+      <section class="skip-automation" aria-label="メッセージ自動削除">
+        <button id="auto-delete-toggle" type="button" aria-pressed="false">メッセージ自動削除 OFF</button>
+        <output id="skip-status" role="status">OFF</output>
       </section>
-      <div id="characters" role="group" aria-label="ステータス変更するキャラクター"></div>
-      <section class="command-section" aria-labelledby="command-title">
-        <h2 id="command-title">チャットコマンド</h2>
-        <textarea id="commands" rows="3" spellcheck="false" placeholder="1s10&#10;1,2m-5&#10;3h-2"></textarea>
-        <button id="execute-commands" type="button">コマンドを実行</button>
-        <small>s=SAN、m=MP、h=HP。どの項目も数値を続けると増加、空白を入れると減少（1s10 / 1s 10、1m10 / 1m 10、1h10 / 1h 10）。Enterで実行、Shift+Enterで改行します。</small>
-      </section>
-      <section class="choice-section" aria-labelledby="metric-title">
-        <h2 id="metric-title">対象ステータス</h2>
-        <div id="metric-options" class="button-group" role="group" aria-label="対象ステータス">
-          <button type="button" class="choice-button is-selected" data-value="hp" aria-pressed="true">HP</button>
-          <button type="button" class="choice-button" data-value="mp" aria-pressed="false">MP</button>
-          <button type="button" class="choice-button" data-value="san" aria-pressed="false">SAN</button>
+      <details class="setup-section">
+        <summary>キャラクター情報と番号割り当て</summary>
+        <button id="acquire" type="button">キャラ情報を取得</button>
+        <div id="characters" aria-label="キャラクター番号割り当て"></div>
+        <output id="status" role="status">キャラ情報を取得してください。</output>
+        <small>番号は1〜9です。例: 1s-10、2h20、8m=10、1234s-10</small>
+      </details>
+
+      <section class="chat-section" aria-label="ルームチャット">
+        <ol id="chat-log" aria-live="polite"></ol>
+        <div class="chat-toolbar">
+          <select id="chat-tabs" class="chat-tabs" aria-label="チャットタブ"></select>
+          <button id="refresh-chat" type="button" aria-label="チャットを更新">更新</button>
         </div>
-      </section>
-      <section class="choice-section" aria-labelledby="operation-title">
-        <h2 id="operation-title">操作方法</h2>
-        <div id="operation-options" class="button-group" role="group" aria-label="操作方法">
-          <button type="button" class="choice-button is-selected" data-value="decrease" aria-pressed="true">減らす</button>
-          <button type="button" class="choice-button" data-value="increase" aria-pressed="false">増やす</button>
-          <button type="button" class="choice-button" data-value="set" aria-pressed="false">指定値</button>
+        <div class="speaker-row">
+          <img id="speaker-avatar" class="speaker-avatar" alt="">
+          <label for="speaker-name">発言名</label>
+          <input id="speaker-name" type="text" placeholder="発言名">
+          <label for="character-choice">キャラクター</label>
+          <select id="character-choice"><option value="">選択なし</option></select>
         </div>
-      </section>
-      <div class="amount-row">
-        <label id="amount-label" for="amount">設定値</label>
-        <input id="amount" type="number" min="0" step="1" value="1">
-        <button id="run" class="run-button" type="button">実行</button>
-      </div>
-      <div class="quick-amount" role="group" aria-label="値を選択">
-        <span>クイック選択</span>
-        <div id="amount-options" class="amount-options">
-          <button type="button" class="amount-choice is-selected" data-value="1" aria-pressed="true">1</button>
-          <button type="button" class="amount-choice" data-value="2" aria-pressed="false">2</button>
-          <button type="button" class="amount-choice" data-value="3" aria-pressed="false">3</button>
-          <button type="button" class="amount-choice" data-value="4" aria-pressed="false">4</button>
-          <button type="button" class="amount-choice" data-value="5" aria-pressed="false">5</button>
-          <button type="button" class="amount-choice" data-value="6" aria-pressed="false">6</button>
-          <button type="button" class="amount-choice" data-value="7" aria-pressed="false">7</button>
-          <button type="button" class="amount-choice" data-value="8" aria-pressed="false">8</button>
-          <button type="button" class="amount-choice" data-value="9" aria-pressed="false">9</button>
-          <button type="button" class="amount-choice" data-value="10" aria-pressed="false">10</button>
-          <button type="button" class="amount-choice" data-value="11" aria-pressed="false">11</button>
-          <button type="button" class="amount-choice" data-value="12" aria-pressed="false">12</button>
-          <button type="button" class="amount-choice" data-value="13" aria-pressed="false">13</button>
-          <button type="button" class="amount-choice" data-value="14" aria-pressed="false">14</button>
-          <button type="button" class="amount-choice" data-value="15" aria-pressed="false">15</button>
-          <button type="button" class="amount-choice" data-value="16" aria-pressed="false">16</button>
-          <button type="button" class="amount-choice" data-value="17" aria-pressed="false">17</button>
-          <button type="button" class="amount-choice" data-value="18" aria-pressed="false">18</button>
-          <button type="button" class="amount-choice" data-value="19" aria-pressed="false">19</button>
-          <button type="button" class="amount-choice" data-value="20" aria-pressed="false">20</button>
+        <div class="dice-toolbar">
+          <div id="dice-shortcuts" class="dice-shortcuts" aria-label="ダイスショートカット"></div>
+          <div id="dice-count" class="dice-count" role="tablist" aria-label="ダイス個数"></div>
         </div>
-      </div>
-      <output id="status" role="status">待機中</output>
-      <small>増加・指定値は最大値を超えないよう制限します。各キャラクターの編集画面を閉じて反映を待ってから次へ進みます。</small>
+        <div class="message-composer">
+          <textarea id="chat-input" rows="3" placeholder="メッセージを入力" aria-label="メッセージを入力"></textarea>
+          <button id="clear-message" type="button">クリア</button>
+          <button id="send-message" type="button">送信</button>
+        </div>
+        <output id="chat-status" role="status"></output>
+      </section>
     </main>
     <script src="control.js"></script>
   </body>
