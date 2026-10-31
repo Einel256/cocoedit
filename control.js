@@ -11,14 +11,28 @@
   const sendButton = document.getElementById('send-message');
   const clearMessageButton = document.getElementById('clear-message');
   const refreshChatButton = document.getElementById('refresh-chat');
+  const openChatPaletteButton = document.getElementById('open-chat-palette');
   const speakerNameInput = document.getElementById('speaker-name');
   const speakerAvatar = document.getElementById('speaker-avatar');
   const characterChoice = document.getElementById('character-choice');
+  const chatPalettePanel = document.getElementById('chat-palette-panel');
+  const chatPaletteSearch = document.getElementById('chat-palette-search');
+  const chatPaletteItems = document.getElementById('chat-palette-items');
+  const chatPaletteStatus = document.getElementById('chat-palette-status');
+  const closeChatPaletteButton = document.getElementById('close-chat-palette');
   const diceShortcuts = document.getElementById('dice-shortcuts');
   const diceCount = document.getElementById('dice-count');
   const autoDeleteToggle = document.getElementById('auto-delete-toggle');
+  const autoSkipInterval = document.getElementById('auto-skip-interval');
   const skipStatus = document.getElementById('skip-status');
+  const settingsToggle = document.getElementById('toggle-settings');
+  const setupSection = document.querySelector('.setup-section');
   const CHARACTER_STORAGE_KEY = 'ccfolia-status-characters-v1';
+  settingsToggle?.addEventListener('click', () => {
+    if (!setupSection) return;
+    setupSection.open = !setupSection.open;
+    settingsToggle.setAttribute('aria-expanded', String(setupSection.open));
+  });
   const readStoredCharacters = () => {
     try {
       const stored = JSON.parse(localStorage.getItem(CHARACTER_STORAGE_KEY) || 'null');
@@ -29,6 +43,7 @@
   };
   let acquiredCharacters = readStoredCharacters();
   let latestChatState = null;
+  let chatPaletteEntries = [];
   let selectedDiceCount = 1;
 
   const syncCommandMap = () => {
@@ -93,31 +108,75 @@
     }
   });
 
+  const AUTO_DELETE_MODE_KEY = 'ccfolia-auto-delete-mode-v1';
+  const readStoredAutoDeleteMode = () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(AUTO_DELETE_MODE_KEY) || 'null');
+      return stored && typeof stored === 'object' ? stored : null;
+    } catch {
+      return null;
+    }
+  };
+  const storedAutoDeleteMode = readStoredAutoDeleteMode();
+  let autoDeleteEnabled = storedAutoDeleteMode?.enabled === true;
+  const renderAutoDeleteToggle = (enabled) => {
+    autoDeleteToggle.setAttribute('aria-pressed', String(enabled));
+    autoDeleteToggle.textContent = enabled ? 'ON' : 'OFF';
+  };
+  renderAutoDeleteToggle(autoDeleteEnabled);
+
   const syncAutoSkipStatus = async () => {
     try {
       const state = await sendRequest('CCFOLIA_AUTO_SKIP_STATUS');
       skipStatus.textContent = state.status;
       autoDeleteToggle.disabled = false;
-      autoDeleteToggle.setAttribute('aria-pressed', String(state.running));
-      autoDeleteToggle.textContent = `メッセージ自動削除 ${state.running ? 'ON' : 'OFF'}`;
+      autoDeleteEnabled = state.running === true;
+      renderAutoDeleteToggle(autoDeleteEnabled);
+      if (state.intervalSeconds && document.activeElement !== autoSkipInterval) {
+        autoSkipInterval.value = String(state.intervalSeconds);
+      }
     } catch (reason) {
-      skipStatus.textContent = reason.message;
+      if (!autoDeleteEnabled) skipStatus.textContent = reason.message;
     }
   };
 
-  autoDeleteToggle.addEventListener('click', async () => {
+  const applyAutoDeleteMode = async () => {
     autoDeleteToggle.disabled = true;
     try {
-      const enabled = autoDeleteToggle.getAttribute('aria-pressed') !== 'true';
-      const state = await sendRequest(enabled ? 'CCFOLIA_AUTO_SKIP_START' : 'CCFOLIA_AUTO_SKIP_STOP');
+      const seconds = Number(autoSkipInterval.value);
+      const state = await sendRequest('CCFOLIA_AUTO_SKIP_MODE', {
+        enabled: autoDeleteEnabled,
+        intervalSeconds: Number.isFinite(seconds) ? seconds : 1
+      });
       skipStatus.textContent = state.status;
-      autoDeleteToggle.setAttribute('aria-pressed', String(state.running));
-      autoDeleteToggle.textContent = `メッセージ自動削除 ${state.running ? 'ON' : 'OFF'}`;
+      autoDeleteEnabled = state.running === true;
+      renderAutoDeleteToggle(autoDeleteEnabled);
     } catch (reason) {
       skipStatus.textContent = reason.message;
     } finally {
       autoDeleteToggle.disabled = false;
     }
+  };
+
+  // ON/OFF スイッチ。開始・終了ではなく、モードを切り替えて制御ウィンドウに保存します。
+  autoDeleteToggle.addEventListener('click', () => {
+    autoDeleteEnabled = !autoDeleteEnabled;
+    renderAutoDeleteToggle(autoDeleteEnabled);
+    localStorage.setItem(AUTO_DELETE_MODE_KEY, JSON.stringify({
+      enabled: autoDeleteEnabled,
+      intervalSeconds: Number(autoSkipInterval.value)
+    }));
+    void applyAutoDeleteMode();
+  });
+  // 待ち時間の変更を反映します。
+  autoSkipInterval.addEventListener('change', () => {
+    const seconds = Number(autoSkipInterval.value);
+    if (!Number.isFinite(seconds)) return;
+    localStorage.setItem(AUTO_DELETE_MODE_KEY, JSON.stringify({
+      enabled: autoDeleteEnabled,
+      intervalSeconds: seconds
+    }));
+    if (autoDeleteEnabled) void applyAutoDeleteMode();
   });
 
   const renderChatState = (chatState) => {
@@ -242,12 +301,12 @@
       button.addEventListener('click', () => insertChatInputText(formula));
       diceShortcuts.append(button);
     }
-    const ccbButton = document.createElement('button');
-    ccbButton.type = 'button';
-    ccbButton.textContent = 'CCB<=';
-    ccbButton.setAttribute('aria-label', 'CCB<=を入力');
-    ccbButton.addEventListener('click', () => insertChatInputText('CCB<='));
-    diceShortcuts.append(ccbButton);
+    const sanButton = document.createElement('button');
+    sanButton.type = 'button';
+    sanButton.textContent = 'SAN';
+    sanButton.setAttribute('aria-label', '正気度ロールを入力');
+    sanButton.addEventListener('click', () => insertChatInputText('1d100<={SAN} 【正気度ロール】'));
+    diceShortcuts.append(sanButton);
     for (let count = 1; count <= 4; count += 1) {
       const button = document.createElement('button');
       button.type = 'button';
@@ -269,6 +328,28 @@
     chatInput.setRangeText(text, start, end, 'end');
     chatInput.focus();
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+
+  const renderChatPalette = () => {
+    const query = chatPaletteSearch.value.trim().toLocaleLowerCase();
+    const filteredEntries = chatPaletteEntries.filter((entry) => entry.toLocaleLowerCase().includes(query));
+    chatPaletteItems.replaceChildren();
+    for (const entry of filteredEntries) {
+      const item = document.createElement('li');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = entry;
+      button.title = entry;
+      button.addEventListener('click', () => {
+        insertChatInputText(entry);
+        chatPalettePanel.hidden = true;
+      });
+      item.append(button);
+      chatPaletteItems.append(item);
+    }
+    chatPaletteStatus.textContent = filteredEntries.length
+      ? `${filteredEntries.length}件`
+      : chatPaletteEntries.length ? '一致する項目がありません。' : 'パレットの項目がありません。';
   };
 
   const refreshChatState = async ({ force = true, includeCharacters = false } = {}) => {
@@ -325,6 +406,28 @@
   });
 
   refreshChatButton.addEventListener('click', () => void refreshChatState({ force: true, includeCharacters: true }));
+  openChatPaletteButton.addEventListener('click', async () => {
+    openChatPaletteButton.disabled = true;
+    chatPaletteStatus.textContent = 'パレットを読み込んでいます…';
+    chatPalettePanel.hidden = false;
+    chatPaletteItems.replaceChildren();
+    try {
+      const result = await sendRequest('CCFOLIA_CHAT_PALETTE');
+      chatPaletteEntries = result.entries ?? [];
+      chatPaletteSearch.value = '';
+      renderChatPalette();
+      chatPaletteSearch.focus();
+    } catch (reason) {
+      chatStatus.textContent = reason.message;
+      chatPalettePanel.hidden = true;
+    } finally {
+      openChatPaletteButton.disabled = false;
+    }
+  });
+  closeChatPaletteButton.addEventListener('click', () => {
+    chatPalettePanel.hidden = true;
+  });
+  chatPaletteSearch.addEventListener('input', renderChatPalette);
   clearMessageButton.addEventListener('click', () => {
     chatInput.value = '';
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -373,6 +476,13 @@
       chatStatus.textContent = reason.message;
     }
   });
+
+  // 保存済みの待ち時間を復元し、ONなら自動削除モードをルーム側へ再適用します。
+  const storedInterval = Number(storedAutoDeleteMode?.intervalSeconds);
+  if (Number.isFinite(storedInterval) && storedInterval >= 0.1 && storedInterval <= 3600) {
+    autoSkipInterval.value = String(storedInterval);
+  }
+  void applyAutoDeleteMode();
 
   renderCharacterChoices();
   renderDiceControls();

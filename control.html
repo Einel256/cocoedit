@@ -8,13 +8,22 @@
   </head>
   <body>
     <main>
-      <h1>ルームチャット</h1>
-      <section class="skip-automation" aria-label="メッセージ自動削除">
-        <button id="auto-delete-toggle" type="button" aria-pressed="false">メッセージ自動削除 OFF</button>
-        <output id="skip-status" role="status">OFF</output>
-      </section>
+      <header class="window-header">
+        <h1>ルームチャット</h1>
+        <button id="toggle-settings" type="button" aria-expanded="false" aria-label="設定・キャラクター情報を開閉" title="設定・キャラクター情報">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+        </button>
+      </header>
       <details class="setup-section">
-        <summary>キャラクター情報と番号割り当て</summary>
+        <summary>設定・キャラクター情報</summary>
+        <section class="skip-automation" aria-label="メッセージ自動削除">
+          <label for="auto-skip-interval">削除までの待ち時間（秒）</label>
+          <input id="auto-skip-interval" type="number" min="0.1" max="3600" step="0.1" value="1">
+          <button id="auto-delete-toggle" type="button" aria-pressed="false">OFF</button>
+          <output id="skip-status" role="status">メッセージ自動削除OFF（通常動作）</output>
+          <small>ONの間は、出てきたメッセージを全スキップし、待ち時間後に閉じます。</small>
+        </section>
+        <h2>キャラクター情報と番号割り当て</h2>
         <button id="acquire" type="button">キャラ情報を取得</button>
         <div id="characters" aria-label="キャラクター番号割り当て"></div>
         <output id="status" role="status">キャラ情報を取得してください。</output>
@@ -33,7 +42,19 @@
           <input id="speaker-name" type="text" placeholder="発言名">
           <label for="character-choice">キャラクター</label>
           <select id="character-choice"><option value="">選択なし</option></select>
+          <button id="open-chat-palette" type="button" aria-label="チャットパレットを開く" title="チャットパレットを開く">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5v14H5V5h14m1.1-2H3.9c-.5 0-.9.4-.9.9v16.2c0 .4.4.9.9.9h16.2c.4 0 .9-.5.9-.9V3.9c0-.5-.5-.9-.9-.9zM11 7h6v2h-6V7zm0 4h6v2h-6v-2zm0 4h6v2h-6zM7 7h2v2H7zm0 4h2v2H7zm0 4h2v2H7z"/></svg>
+          </button>
         </div>
+        <section id="chat-palette-panel" class="chat-palette-panel" aria-label="チャットパレット" hidden>
+          <div class="chat-palette-toolbar">
+            <strong>技能値パレット</strong>
+            <input id="chat-palette-search" type="search" placeholder="技能を検索" aria-label="技能値を検索">
+            <button id="close-chat-palette" type="button" aria-label="パレットを閉じる">閉じる</button>
+          </div>
+          <ul id="chat-palette-items" class="chat-palette-items"></ul>
+          <output id="chat-palette-status" role="status"></output>
+        </section>
         <div class="dice-toolbar">
           <div id="dice-shortcuts" class="dice-shortcuts" aria-label="ダイスショートカット"></div>
           <div id="dice-count" class="dice-count" role="tablist" aria-label="ダイス個数"></div>

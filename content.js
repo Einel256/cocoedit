@@ -401,13 +401,12 @@
     if (toggle?.hasAttribute('aria-expanded')) return toggle.getAttribute('aria-expanded') === 'true';
     return Boolean(chatDrawerCloseButton());
   };
-  const withChatDrawer = async (callback) => {
+  const withChatDrawer = async (callback, { forceOpen = false, closeAfter = false } = {}) => {
     // The docked CCFOLIA chat form stays mounted when collapsed. Use it directly
     // to avoid opening and closing the drawer for every message.
-    const shouldOpen = !chatComposerMounted();
-    if (!shouldOpen) return callback();
+    const shouldOpen = forceOpen ? !chatDrawerIsOpen() : !chatComposerMounted();
     const wasClosed = !chatDrawerIsOpen();
-    if (wasClosed) {
+    if (shouldOpen && wasClosed) {
       const openButton = chatDrawerOpenButton();
       if (!openButton) throw new Error('CCFOLIAのチャットウィンドウを開けません。');
       openButton.click();
@@ -416,7 +415,7 @@
     try {
       return await callback();
     } finally {
-      if (wasClosed) {
+      if ((shouldOpen && wasClosed) || closeAfter) {
         const closeButton = chatDrawerCloseButton();
         if (closeButton) {
           closeButton.click();
@@ -654,13 +653,114 @@
     return sendChatText({ text: `${diceCount}${label}` });
   };
 
-  const autoSkip = { active: false, timer: null, root: null, intervalMs: 1000 };
+  const closeChatPaletteDialog = (root) => {
+    const closeButton = [...(root?.querySelectorAll('button') ?? [])].find((button) => visible(button)
+      && (button.getAttribute('aria-label') === '閉じる' || button.querySelector('svg[data-testid="CloseIcon"]')));
+    if (closeButton) closeButton.click();
+    else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  };
+  const readChatPaletteEntries = async (root) => {
+    const scrollableList = root.matches('.MuiDialogContent-root.scrollable-list')
+      ? root
+      : root.querySelector('.MuiDialogContent-root.scrollable-list');
+    if (!scrollableList) throw new Error('チャットパレットのスクロール領域が見つかりません。');
+
+    const itemLabelSelector = '.MuiListItemButton-root[role="button"] .MuiListItemText-primary';
+    const entries = new Set();
+    let itemLabelCount = 0;
+    const collect = () => {
+      itemLabelCount = 0;
+      for (const label of scrollableList.querySelectorAll(itemLabelSelector)) {
+        itemLabelCount += 1;
+        const text = normalizedText(label);
+        if (text) entries.add(text);
+      }
+      return itemLabelCount;
+    };
+
+    // 実際にスクロールする要素は .scrollable-list 自体とは限らないため、
+    // 内容がもっともはみ出している（scrollHeight - clientHeight が最大の）子孫を使います。
+    const scrollDelta = (element) => element.scrollHeight - element.clientHeight;
+    const scrollingElement = [scrollableList, ...scrollableList.querySelectorAll('div, ul, ol')]
+      .filter(visible)
+      .sort((left, right) => scrollDelta(right) - scrollDelta(left))
+      .find((element) => scrollDelta(element) > 1) ?? scrollableList;
+
+    collect();
+    // 項目数・高さ・位置が固定したまま最下部に張り付くまで、少しずつスクロールします。
+    let stablePasses = 0;
+    let previousCount = -1;
+    let previousHeight = -1;
+    let previousTop = -1;
+    for (let pass = 0; pass < 300 && stablePasses < 3; pass += 1) {
+      const count = collect();
+      const height = scrollingElement.scrollHeight;
+      const top = Math.round(scrollingElement.scrollTop);
+      const atBottom = top + scrollingElement.clientHeight >= height - 2;
+      if (count === previousCount && height === previousHeight && top === previousTop && atBottom) {
+        stablePasses += 1;
+      } else {
+        stablePasses = 0;
+      }
+      previousCount = count;
+      previousHeight = height;
+      previousTop = top;
+      if (stablePasses >= 3) break;
+      const step = Math.max(120, scrollingElement.clientHeight * 0.7);
+      const maxTop = height - scrollingElement.clientHeight;
+      scrollingElement.scrollTop = Math.min(maxTop, scrollingElement.scrollTop + step);
+      scrollingElement.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await wait(70);
+    }
+    collect();
+    return [...entries];
+  };
+  const openChatPalette = async () => withChatDrawer(async () => {
+    const icon = [...document.querySelectorAll('svg[data-testid="ListAltIcon"]')].find(visible);
+    const button = icon?.closest('button');
+    if (!button) throw new Error('CCFOLIAのチャットパレットボタンが見つかりません。');
+
+    button.click();
+    const root = await waitFor(() => [...document.querySelectorAll('[role="dialog"], .MuiDialog-root, .MuiModal-root, [role="presentation"]')]
+      .filter(visible)
+      .filter((element) => normalizedText(element).includes('チャットパレット'))
+      .sort((left, right) => left.querySelectorAll('*').length - right.querySelectorAll('*').length)[0], 1200);
+    if (!root) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      throw new Error('CCFOLIAのチャットパレットを読み取れませんでした。');
+    }
+
+    try {
+      // SANロール（1d100<={SAN}）やダメージ判定など、CCB以外の項目も含めて全項目を返します。
+      const entries = await readChatPaletteEntries(root);
+      return { ok: true, entries };
+    } finally {
+      closeChatPaletteDialog(root);
+      await wait(80);
+    }
+  }, { forceOpen: true, closeAfter: true });
+
+  // 自動削除モードの状態機械。
+  // mode ON のとき、出現したメッセージ画面の全メッセージをスキップした後、
+  // 指定秒待ってから閉じるボタンで閉じ、監視に戻ります。
+  // phase: idle=監視中 / skipping=全スキップ中 / waiting=指定秒の待機 / closing=閉じ処理中
+  const autoSkip = {
+    mode: false,
+    phase: 'idle',
+    timer: null,
+    root: null,
+    allowCloseOnly: false,
+    pollCount: 0,
+    intervalMs: 1000,
+    lastStatus: ''
+  };
   const findMessageCloseButton = (root) => [...root.querySelectorAll('button')]
     .filter(visible)
     .find((button) => button.getAttribute('aria-label') === '閉じる'
       || button.querySelector('svg[data-testid="CloseIcon"]'));
   const findSkipDialog = () => {
-    const skipButtons = [...document.querySelectorAll('button[aria-label="スキップ"]')].filter(visible);
+    // ラベルの完全一致ではなく部分一致で探します（「スキップする」等の表記ゆれ対策）。
+    const skipButtons = [...document.querySelectorAll('button[aria-label*="スキップ"]')].filter(visible);
     for (const skip of skipButtons) {
       let root = skip.parentElement;
       for (let depth = 0; root && depth < 12; depth += 1, root = root.parentElement) {
@@ -670,99 +770,241 @@
     }
     return null;
   };
-  const stopAutoSkip = (status = '自動スキップを停止しました。') => {
-    if (autoSkip.timer !== null) clearTimeout(autoSkip.timer);
-    autoSkip.active = false;
-    autoSkip.timer = null;
-    autoSkip.root = null;
+  // スキップボタンを持たない「閉じる」だけのメッセージ画面も処理対象にします。
+  // 誤って別のダイアログ（編集画面など）を閉じないよう、閉じるボタンだけの画面は
+  // `allowCloseOnly` が有効なときに限って対象にします。
+  const findCloseOnlyDialog = () => {
+    // role=dialog や MUI のオーバーレイの内、閉じるボタンを持つものを優先します。
+    const overlays = [...document.querySelectorAll('[role="dialog"], .MuiDialog-root, .MuiModal-root, [aria-modal="true"], [class*="overlay" i], [class*="dialog" i], [class*="modal" i]')].filter(visible);
+    for (let index = overlays.length - 1; index >= 0; index -= 1) {
+      const close = findMessageCloseButton(overlays[index]);
+      if (close) return { root: overlays[index], skip: null, close };
+    }
+    // メッセージ画面が上記のオーバーレイ構造を持たない場合でも、
+    // 表示中の閉じるボタンがあれば直接拾います。もっとも手前面の（後出生の）ものを優先します。
+    const closeButtons = [...document.querySelectorAll('button[aria-label*="閉じる"]')]
+      .concat([...document.querySelectorAll('button')].filter((button) => button.querySelector('svg[data-testid="CloseIcon"]')));
+    const candidates = closeButtons.filter(visible);
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      const button = candidates[index];
+      const root = button.closest('[role="dialog"], .MuiDialog-root, .MuiModal-root, [class*="overlay" i], [class*="modal" i], [class*="dialog" i]')
+        ?? button.parentElement;
+      if (root) return { root, skip: null, close: button };
+    }
+    return null;
+  };
+  const findMessageDialog = () => findSkipDialog()
+    ?? (autoSkip.allowCloseOnly === true ? findCloseOnlyDialog() : null);
+  // .click() だけでなく pointer/mouse イベントも送るため、MUI製の閉じるボタンでも確実に反応させます。
+  const pressElement = (element) => {
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    const base = {
+      clientX: Math.round(rect.left + rect.width / 2),
+      clientY: Math.round(rect.top + rect.height / 2),
+      button: 0,
+      bubbles: true,
+      cancelable: true,
+      composed: true
+    };
+    const pointer = { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    try {
+      element.dispatchEvent(new PointerEvent('pointerdown', pointer));
+      element.dispatchEvent(new MouseEvent('mousedown', base));
+      element.dispatchEvent(new PointerEvent('pointerup', pointer));
+      element.dispatchEvent(new MouseEvent('mouseup', base));
+    } catch { /* PointerEvent がない環境では click のみで試します */ }
+    element.click();
+  };
+  // 閉じる判定に使う、メッセージ画面の内容の指紋。
+  const dialogSignature = (root) => (root?.innerText ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  // メッセージ画面を閉じ、閉じていなければ最大4回までクリックまたはEscapeで再試行します。
+  const closeCurrentMessage = async (preferredRoot = null) => {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (!autoSkip.mode) return false;
+      const close = (preferredRoot?.isConnected ? findMessageCloseButton(preferredRoot) : null)
+        ?? findMessageDialog()?.close;
+      if (close) {
+        log(`閉じるボタンを押します（${attempt + 1}/4）。`, close);
+        pressElement(close);
+      } else {
+        log(`閉じるボタンが見つからないためEscapeを送ります（${attempt + 1}/4）。`);
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      }
+      await wait(180);
+      const remaining = preferredRoot?.isConnected
+        ? findMessageCloseButton(preferredRoot)
+        : null;
+      if (!remaining && !findSkipDialog()) return true;
+    }
+    return false;
+  };
+
+  const setAutoSkipStatus = (status) => {
     autoSkip.lastStatus = status;
     log(status);
-    return { ok: true, running: false, status };
   };
-  const scheduleAutoSkip = () => {
-    const delay = autoSkip.root?.isConnected ? autoSkip.intervalMs : 250;
-    autoSkip.timer = setTimeout(async () => {
-      if (!autoSkip.active) return;
-      const wasWaitingForMessage = !autoSkip.root?.isConnected;
-      const target = findSkipDialog();
-      if (target) {
-        autoSkip.root = target.root;
-        if (wasWaitingForMessage) {
-          scheduleAutoSkip();
-          return;
-        }
-      }
-      const root = autoSkip.root;
-      if (!target && !root?.isConnected) {
-        autoSkip.root = null;
-        scheduleAutoSkip();
-        return;
-      }
-      if (!root?.isConnected) {
-        stopAutoSkip('メッセージ画面が閉じられたため、自動スキップを停止しました。');
-        return;
-      }
-      const close = target?.close
-        ?? findMessageCloseButton(root);
-      if (!close) {
-        stopAutoSkip('閉じるボタンが見つからないため、自動スキップを停止しました。');
-        return;
-      }
-      const skip = target?.skip
-        ?? [...root.querySelectorAll('button[aria-label="スキップ"]')].find(visible);
-      if (skip && !skip.disabled && skip.getAttribute('aria-disabled') !== 'true') {
-        skip.click();
-        scheduleAutoSkip();
-        return;
-      }
 
-      // A skip can briefly disappear while CCFOLIA advances to the next
-      // message. Re-query the current dialog before deciding it has finished.
-      const settled = await waitFor(() => {
+  const clearAutoSkipTimer = () => {
+    if (autoSkip.timer !== null) {
+      clearTimeout(autoSkip.timer);
+      autoSkip.timer = null;
+    }
+  };
+
+  const scheduleAutoSkip = (delay = 250) => {
+    clearAutoSkipTimer();
+    autoSkip.timer = setTimeout(() => void autoSkipTick(), delay);
+  };
+
+  // 全メッセージを連続でスキップします。内容が変わる限りすぐに次を押し、
+  // 変わらなければ（＝読むべきメッセージが無い）、そこで読み切りとします。
+  const runSkipPhase = async () => {
+    const deadline = Date.now() + 15000;
+    while (autoSkip.mode && autoSkip.phase === 'skipping' && Date.now() < deadline) {
+      const target = findSkipDialog();
+      const skip = target?.skip;
+      if (!skip || skip.disabled || skip.getAttribute('aria-disabled') === 'true') break;
+      const before = dialogSignature(target.root);
+      autoSkip.root = target.root;
+      log('スキップボタンを押します。', skip);
+      pressElement(skip);
+      const verdict = await waitFor(() => {
         const current = findSkipDialog();
         if (current?.skip && !current.skip.disabled && current.skip.getAttribute('aria-disabled') !== 'true') {
-          autoSkip.root = current.root;
-          return { current };
+          return dialogSignature(current.root) !== before ? { next: current } : null;
         }
-        return root.isConnected ? null : { gone: true };
-      }, 1200);
-      if (!autoSkip.active) return;
-      if (settled?.current) {
-        scheduleAutoSkip();
-        return;
-      }
-      if (settled?.gone || root.isConnected) {
-        const currentClose = findSkipDialog()?.close ?? findMessageCloseButton(root);
-        if (currentClose) currentClose.click();
-        stopAutoSkip('スキップ後にメッセージを閉じました。');
-        return;
-      }
-    }, delay);
+        return current ? null : { done: true };
+      }, 1500);
+      if (!autoSkip.mode || autoSkip.phase !== 'skipping') return false;
+      if (verdict?.next) continue;
+      break;
+    }
+    return true;
   };
-  const startAutoSkip = () => {
-    const seconds = 1;
-    const target = autoSkip.active ? null : findSkipDialog();
+
+  const autoSkipTick = () => {
+    autoSkip.timer = null;
+    if (!autoSkip.mode) return;
+
+    // 全スキップ中: 連続でスキップを押し、読み切ったら待機へ
+    if (autoSkip.phase === 'skipping') {
+      void (async () => {
+        await runSkipPhase();
+        if (!autoSkip.mode) return;
+        const lastDialog = findSkipDialog();
+        autoSkip.readSignature = dialogSignature(lastDialog?.root?.isConnected ? lastDialog.root : autoSkip.root);
+        autoSkip.phase = 'waiting';
+        setAutoSkipStatus(`メッセージを読み切りました。${Math.round(autoSkip.intervalMs / 1000)}秒後に閉じます。`);
+        scheduleAutoSkip(autoSkip.intervalMs);
+      })();
+      return;
+    }
+
+    // 指定秒の待機: 待機中に有効なスキップ（＝新しいメッセージ）が来たら先に
+    // 全スキップへ戻り、そのままなら閉じるボタンで閉じて監視に戻ります。
+    if (autoSkip.phase === 'waiting') {
+      void (async () => {
+        const current = findSkipDialog();
+        // 待機を開始したときと同じ内容の画面は読み切ったメッセージです。
+        // 内容が変わった（新しいメッセージが届いた）ときだけ全スキップへ戻ります。
+        const enabledSkip = Boolean(current?.skip && !current.skip.disabled
+          && current.skip.getAttribute('aria-disabled') !== 'true'
+          && dialogSignature(current.root) !== autoSkip.readSignature);
+        if (enabledSkip) {
+          autoSkip.root = current.root;
+          autoSkip.phase = 'skipping';
+          setAutoSkipStatus('新しいメッセージを検出しました。全スキップします。');
+          scheduleAutoSkip(0);
+          return;
+        }
+        if (current?.root?.isConnected) autoSkip.root = current.root;
+        if (!autoSkip.root?.isConnected) {
+          const closeOnly = findMessageDialog();
+          autoSkip.root = closeOnly?.root ?? null;
+          if (!closeOnly) {
+            autoSkip.phase = 'idle';
+            setAutoSkipStatus('メッセージはありません。新しいメッセージを監視中です。');
+            scheduleAutoSkip();
+            return;
+          }
+        }
+        autoSkip.phase = 'closing';
+        const closed = await closeCurrentMessage(autoSkip.root);
+        if (!autoSkip.mode) return;
+        autoSkip.phase = 'idle';
+        autoSkip.root = null;
+        setAutoSkipStatus(closed
+          ? 'メッセージを閉じました。新しいメッセージを監視中です。'
+          : 'メッセージを閉じられなかったため監視に戻ります。');
+        scheduleAutoSkip();
+      })();
+      return;
+    }
+
+    // 監視中: メッセージ画面（スキップボタンあり）を待ちます。
+    const target = findSkipDialog();
+    if (target) {
+      autoSkip.root = target.root;
+      autoSkip.allowCloseOnly = true;
+      autoSkip.phase = 'skipping';
+      setAutoSkipStatus('メッセージを検出しました。全スキップします。');
+      scheduleAutoSkip(0);
+      return;
+    }
+    autoSkip.pollCount += 1;
+    if (autoSkip.pollCount % 8 === 1) {
+      log('メッセージ画面を監視中。document上の候補数:',
+        'スキップ=', [...document.querySelectorAll('button[aria-label*="スキップ"]')].filter(visible).length,
+        '閉じる=', [...document.querySelectorAll('button[aria-label*="閉じる"]')].filter(visible).length,
+        'CloseIcon=', [...document.querySelectorAll('svg[data-testid="CloseIcon"]')].length,
+        'dialog=', document.querySelectorAll('[role="dialog"]').length);
+    }
+    scheduleAutoSkip();
+  };
+
+  const setAutoSkipMode = ({ enabled, intervalSeconds = 1 } = {}) => {
+    const enable = Boolean(enabled);
+    const seconds = Number(intervalSeconds);
+    if (enable && (!Number.isFinite(seconds) || seconds < 0.1 || seconds > 3600)) {
+      throw new Error('待ち時間は0.1〜3600秒で指定してください。');
+    }
     autoSkip.intervalMs = Math.round(seconds * 1000);
-    if (autoSkip.active) {
-      if (autoSkip.timer !== null) clearTimeout(autoSkip.timer);
-      autoSkip.timer = null;
+    if (!enable) {
+      clearAutoSkipTimer();
+      autoSkip.mode = false;
+      autoSkip.phase = 'idle';
+      autoSkip.root = null;
+      autoSkip.allowCloseOnly = false;
+      autoSkip.lastStatus = 'メッセージ自動削除OFF（通常動作）';
+      log(autoSkip.lastStatus);
+      return { ok: true, running: false, status: autoSkip.lastStatus };
+    }
+    if (autoSkip.mode) {
+      // すでにONのときは待ち時間だけ更新します。
+      autoSkip.phase = 'idle';
+      autoSkip.root = null;
+      autoSkip.allowCloseOnly = false;
       autoSkip.lastStatus = `メッセージ自動削除ON（${seconds}秒間隔）`;
       scheduleAutoSkip();
       return { ok: true, running: true, intervalSeconds: seconds, status: autoSkip.lastStatus };
     }
-    autoSkip.active = true;
-    autoSkip.root = target?.root ?? null;
-    autoSkip.lastStatus = target
-      ? `メッセージ自動削除ON（${seconds}秒間隔）`
-      : `メッセージ自動削除ON（表示を監視中）`;
+    autoSkip.mode = true;
+    autoSkip.phase = 'idle';
+    autoSkip.root = null;
+    autoSkip.allowCloseOnly = false;
+    autoSkip.pollCount = 0;
+    autoSkip.lastStatus = `メッセージ自動削除ON（${seconds}秒間隔）`;
+    log(autoSkip.lastStatus);
     scheduleAutoSkip();
     return { ok: true, running: true, intervalSeconds: seconds, status: autoSkip.lastStatus };
   };
   const getAutoSkipStatus = () => ({
     ok: true,
-    running: autoSkip.active,
+    running: autoSkip.mode,
+    phase: autoSkip.phase,
     intervalSeconds: autoSkip.intervalMs / 1000,
-    status: autoSkip.lastStatus || (autoSkip.active ? '自動スキップ中です。' : '停止中です。')
+    status: autoSkip.lastStatus || (autoSkip.mode ? 'メッセージ自動削除ON（監視中）' : 'メッセージ自動削除OFF（通常動作）')
   });
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -782,11 +1024,9 @@
       sendResponse(getAutoSkipStatus());
       return undefined;
     }
-    if (message?.type === 'CCFOLIA_AUTO_SKIP_START_IN_ROOM' || message?.type === 'CCFOLIA_AUTO_SKIP_STOP_IN_ROOM') {
+    if (message?.type === 'CCFOLIA_AUTO_SKIP_MODE_IN_ROOM') {
       try {
-        sendResponse(message.type === 'CCFOLIA_AUTO_SKIP_START_IN_ROOM'
-          ? startAutoSkip(message)
-          : stopAutoSkip());
+        sendResponse(setAutoSkipMode(message));
       } catch (reason) {
         sendResponse({ ok: false, error: reason instanceof Error ? reason.message : String(reason) });
       }
@@ -797,7 +1037,8 @@
       CCFOLIA_CHAT_SELECT_TAB_IN_ROOM: selectChatTab,
       CCFOLIA_CHAT_SET_SPEAKER_IN_ROOM: setChatSpeaker,
       CCFOLIA_CHAT_SELECT_CHARACTER_IN_ROOM: selectChatCharacter,
-      CCFOLIA_CHAT_DICE_IN_ROOM: clickDiceShortcut
+      CCFOLIA_CHAT_DICE_IN_ROOM: clickDiceShortcut,
+      CCFOLIA_CHAT_PALETTE_IN_ROOM: openChatPalette
     };
     const action = actions[message?.type];
     if (!action) return undefined;

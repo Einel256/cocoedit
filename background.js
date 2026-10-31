@@ -13,7 +13,7 @@
       await chrome.windows.create({
         url: chrome.runtime.getURL('control.html'),
         type: 'popup',
-        width: 600,
+        width: 420,
         height: 820,
         focused: true
       });
@@ -51,8 +51,8 @@
       'CCFOLIA_CHAT_SET_SPEAKER',
       'CCFOLIA_CHAT_SELECT_CHARACTER',
       'CCFOLIA_CHAT_DICE',
-      'CCFOLIA_AUTO_SKIP_START',
-      'CCFOLIA_AUTO_SKIP_STOP',
+      'CCFOLIA_CHAT_PALETTE',
+      'CCFOLIA_AUTO_SKIP_MODE',
       'CCFOLIA_AUTO_SKIP_STATUS'
     ]);
     if (!forwardedTypes.has(message?.type)) return undefined;
