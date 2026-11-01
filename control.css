@@ -10,6 +10,147 @@
   --accent: #e6004f;
 }
 
+body[data-theme="original"] {
+  --text: #d4d4d4;
+  --muted: #888888;
+  --line: rgba(255, 255, 255, 0.06);
+  --field: #1e1e1e;
+  --panel: #262626;
+  --surface: #1a1a1a;
+  --accent: #e6004f;
+}
+
+/* ボタン */
+body[data-theme="original"] button {
+  background: #333333;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+body[data-theme="original"] button:hover:not(:disabled) {
+  background: #444444;
+}
+
+/* フォームプレースホルダー */
+body[data-theme="original"] ::placeholder {
+  color: #666666;
+}
+
+/* ヘッダー */
+body[data-theme="original"] .window-header {
+  background: #262626;
+}
+body[data-theme="original"] #toggle-settings {
+  color: #aaaaaa;
+}
+body[data-theme="original"] #toggle-settings:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+body[data-theme="original"] #toggle-settings[aria-expanded="true"] {
+  color: #ffffff;
+}
+
+/* 設定セクション */
+body[data-theme="original"] .setup-section {
+  background: #262626;
+}
+body[data-theme="original"] .setup-section summary {
+  color: #cccccc;
+}
+body[data-theme="original"] .setup-section summary:hover {
+  color: #ffffff;
+}
+body[data-theme="original"] .skip-automation label {
+  color: #aaaaaa;
+}
+body[data-theme="original"] #auto-delete-toggle[aria-pressed="true"] {
+  border-color: rgba(230, 0, 79, 0.55);
+  background: rgba(230, 0, 79, 0.28);
+}
+body[data-theme="original"] .skip-automation #skip-status {
+  color: #aaaaaa;
+}
+
+/* キャラクター一覧 */
+body[data-theme="original"] .character-name {
+  color: #d4d4d4;
+}
+body[data-theme="original"] output {
+  color: #d4d4d4;
+}
+
+/* チャットログ */
+body[data-theme="original"] .chat-message {
+  border-bottom-color: rgba(255, 255, 255, 0.04);
+}
+body[data-theme="original"] .message-avatar,
+body[data-theme="original"] .message-avatar-placeholder {
+  background: #333333;
+}
+body[data-theme="original"] .message-header strong {
+  color: #888888;
+}
+body[data-theme="original"] .message-header small {
+  color: #666666;
+}
+body[data-theme="original"] .message-content p {
+  color: #d4d4d4;
+}
+
+/* チャットタブ・更新ボタン */
+body[data-theme="original"] #refresh-chat {
+  color: #aaaaaa;
+}
+
+/* 発言者行 */
+body[data-theme="original"] .speaker-row label {
+  color: #888888;
+}
+body[data-theme="original"] .speaker-avatar {
+  background: #333333;
+}
+
+/* チャットパレットボタン */
+body[data-theme="original"] #open-chat-palette {
+  color: #aaaaaa;
+}
+body[data-theme="original"] #open-chat-palette:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* チャットパレットパネル */
+body[data-theme="original"] #chat-palette-status {
+  color: #888888;
+}
+
+/* ダイス */
+body[data-theme="original"] .dice-shortcuts button {
+  background: #333333;
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #d4d4d4;
+}
+body[data-theme="original"] .dice-shortcuts button:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: #444444;
+}
+body[data-theme="original"] .dice-count button {
+  background: #333333;
+  color: #aaaaaa;
+}
+
+/* 技能候補ドロップダウン */
+body[data-theme="original"] .skill-suggestions {
+  border-color: rgba(255, 255, 255, 0.08);
+}
+body[data-theme="original"] .skill-suggestion-item:hover,
+body[data-theme="original"] .skill-suggestion-item:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+  outline-color: rgba(255, 255, 255, 0.2);
+}
+
+/* ステータス表示 */
+body[data-theme="original"] #chat-status {
+  color: #d4d4d4;
+}
+
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html { background: transparent; }
@@ -65,9 +206,6 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 .message-header strong { color: #888; font-size: 13px; font-weight: 500; }
 .message-header small { margin: 0; color: #6d7484; font-size: 10px; }
 .message-content p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #dcdfe6; font-size: 13px; line-height: 1.55; }
-.ccb-result-success { color: #2985ce; }
-.ccb-result-failure { color: #d1004a; }
-
 /* チャットタブ */
 .chat-toolbar { display: flex; align-items: center; gap: 6px; padding-top: 2px; }
 .chat-tabs { flex: 1; height: 34px; }
@@ -78,7 +216,7 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 .speaker-row label { color: #8a91a0; font-size: 11px; white-space: nowrap; }
 .speaker-avatar { flex: 0 0 30px; width: 30px; height: 30px; border-radius: 6px; object-fit: cover; background: rgb(52 57 70); }
 .speaker-row input { flex: 1 1 auto; width: 60px; padding: 5px 8px; }
-.speaker-row select { flex: 0 1 110px; width: 110px; padding: 5px 6px; }
+.speaker-row select { flex: 1 1 auto; min-width: 120px; padding: 5px 6px; }
 #open-chat-palette { display: grid; flex: 0 0 30px; width: 30px; height: 30px; place-items: center; padding: 5px; border: none; border-radius: 6px; background: transparent; color: #a9b0bd; }
 #open-chat-palette svg { width: 18px; height: 18px; fill: currentColor; }
 #open-chat-palette:hover:not(:disabled) { color: #fff; background: rgb(255 255 255 / .1); }
@@ -103,7 +241,40 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 .dice-count button.is-selected { border-color: transparent; background: var(--accent); color: #fff; font-weight: 700; }
 
 /* 入力欄 */
-.message-composer { display: grid; grid-template-columns: minmax(0, 1fr) 64px 74px; grid-template-rows: minmax(84px, 1fr) auto; align-items: end; gap: 6px; }
+.message-composer { display: grid; grid-template-columns: minmax(0, 1fr) 64px 74px; grid-template-rows: minmax(84px, 1fr) auto; align-items: end; gap: 6px; position: relative; }
+
+/* 技能候補ドロップダウン */
+.skill-suggestions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid rgb(255 255 255 / .14);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  background: var(--panel);
+  box-shadow: 0 4px 12px rgba(0,0,0,.4);
+}
+.skill-suggestions[hidden] { display: none !important; }
+.skill-suggestion-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+}
+.skill-suggestion-item:hover, .skill-suggestion-item:focus-visible {
+  background: rgb(255 255 255 / .1);
+  outline: 2px solid rgb(255 255 255 / .35);
+  outline-offset: -1px;
+}
 #chat-input { grid-column: 1 / -1; grid-row: 1; width: 100%; min-height: 84px; padding: 9px 11px; resize: vertical; font-size: 13.5px; line-height: 1.5; }
 #clear-message, #send-message { grid-row: 2; min-height: 32px; padding: 5px 0; }
 #clear-message { grid-column: 2; }

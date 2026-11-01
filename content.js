@@ -681,9 +681,22 @@
     else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   };
   const readChatPaletteEntries = async (root) => {
-    const scrollableList = root.matches('.MuiDialogContent-root.scrollable-list')
+    // root がチャットパレットのヘッダー部分（MuiAppBar-root など）の場合、
+    // 親を遡って .MuiDialogContent-root.scrollable-list を見つけます。
+    let scrollableList = root.matches('.MuiDialogContent-root.scrollable-list')
       ? root
       : root.querySelector('.MuiDialogContent-root.scrollable-list');
+    if (!scrollableList) {
+      let ancestor = root.parentElement;
+      while (ancestor && ancestor !== document.body) {
+        const found = ancestor.querySelector('.MuiDialogContent-root.scrollable-list');
+        if (found) {
+          scrollableList = found;
+          break;
+        }
+        ancestor = ancestor.parentElement;
+      }
+    }
     if (!scrollableList) throw new Error('チャットパレットのスクロール領域が見つかりません。');
 
     const itemLabelSelector = '.MuiListItemButton-root[role="button"] .MuiListItemText-primary';
@@ -699,10 +712,16 @@
       return itemLabelCount;
     };
 
-    // 実際にスクロールする要素は .scrollable-list 自体とは限らないため、
-    // 内容がもっともはみ出している（scrollHeight - clientHeight が最大の）子孫を使います。
+    // スクロール対象として、スクロール領域自身とその上位コンテナも候補に含めます。
+    // CCFOLIAのDOM構造によっては .scrollable-list 自体に十分なスクロール量がない場合があります。
     const scrollDelta = (element) => element.scrollHeight - element.clientHeight;
-    const scrollingElement = [scrollableList, ...scrollableList.querySelectorAll('div, ul, ol')]
+    const scrollCandidates = [scrollableList, ...scrollableList.querySelectorAll('div, ul, ol')];
+    let parent = scrollableList.parentElement;
+    while (parent && parent !== document.body) {
+      scrollCandidates.push(parent);
+      parent = parent.parentElement;
+    }
+    const scrollingElement = scrollCandidates
       .filter(visible)
       .sort((left, right) => scrollDelta(right) - scrollDelta(left))
       .find((element) => scrollDelta(element) > 1) ?? scrollableList;
@@ -713,7 +732,7 @@
     let previousCount = -1;
     let previousHeight = -1;
     let previousTop = -1;
-    for (let pass = 0; pass < 300 && stablePasses < 3; pass += 1) {
+    for (let pass = 0; pass < 500 && stablePasses < 3; pass += 1) {
       const count = collect();
       const height = scrollingElement.scrollHeight;
       const top = Math.round(scrollingElement.scrollTop);
@@ -727,6 +746,7 @@
       previousHeight = height;
       previousTop = top;
       if (stablePasses >= 3) break;
+      if (atBottom) break;
       const step = Math.max(120, scrollingElement.clientHeight * 0.7);
       const maxTop = height - scrollingElement.clientHeight;
       scrollingElement.scrollTop = Math.min(maxTop, scrollingElement.scrollTop + step);
@@ -742,10 +762,14 @@
     if (!button) throw new Error('CCFOLIAのチャットパレットボタンが見つかりません。');
 
     button.click();
-    const root = await waitFor(() => [...document.querySelectorAll('[role="dialog"], .MuiDialog-root, .MuiModal-root, [role="presentation"]')]
+    // 現在のCCFOLIAではダイアログが role="dialog" を持たず MuiPaper-root でラップされているため、
+    // 従来のセレクターに加えて MuiPaper-root も検索対象に含めます。
+    const root = await waitFor(() => [
+      ...document.querySelectorAll('[role="dialog"], .MuiDialog-root, .MuiModal-root, [role="presentation"], .MuiPaper-root')
+    ]
       .filter(visible)
       .filter((element) => normalizedText(element).includes('チャットパレット'))
-      .sort((left, right) => left.querySelectorAll('*').length - right.querySelectorAll('*').length)[0], 1200);
+      .sort((left, right) => left.querySelectorAll('*').length - right.querySelectorAll('*').length)[0], 3000);
     if (!root) {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       throw new Error('CCFOLIAのチャットパレットを読み取れませんでした。');

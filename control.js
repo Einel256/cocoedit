@@ -12,7 +12,6 @@
   const clearMessageButton = document.getElementById('clear-message');
   const refreshChatButton = document.getElementById('refresh-chat');
   const openChatPaletteButton = document.getElementById('open-chat-palette');
-  const speakerNameInput = document.getElementById('speaker-name');
   const speakerAvatar = document.getElementById('speaker-avatar');
   const characterChoice = document.getElementById('character-choice');
   const chatPalettePanel = document.getElementById('chat-palette-panel');
@@ -20,6 +19,7 @@
   const chatPaletteItems = document.getElementById('chat-palette-items');
   const chatPaletteStatus = document.getElementById('chat-palette-status');
   const closeChatPaletteButton = document.getElementById('close-chat-palette');
+  const skillSuggestions = document.getElementById('skill-suggestions');
   const diceShortcuts = document.getElementById('dice-shortcuts');
   const diceCount = document.getElementById('dice-count');
   const autoDeleteToggle = document.getElementById('auto-delete-toggle');
@@ -27,6 +27,8 @@
   const skipStatus = document.getElementById('skip-status');
   const settingsToggle = document.getElementById('toggle-settings');
   const setupSection = document.querySelector('.setup-section');
+  const themeSelect = document.getElementById('theme-select');
+  const THEME_STORAGE_KEY = 'ccfolia-theme-v1';
   const CHARACTER_STORAGE_KEY = 'ccfolia-status-characters-v1';
   settingsToggle?.addEventListener('click', () => {
     if (!setupSection) return;
@@ -41,6 +43,22 @@
       return null;
     }
   };
+
+  const readStoredTheme = () => {
+    try {
+      const stored = localStorage.getItem(THEME_STORAGE_KEY);
+      return stored === 'dark' || stored === 'original' ? stored : 'dark';
+    } catch {
+      return 'dark';
+    }
+  };
+
+  const applyTheme = (theme) => {
+    document.body.setAttribute('data-theme', theme);
+    themeSelect.value = theme;
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  };
+
   let acquiredCharacters = readStoredCharacters();
   let latestChatState = null;
   let chatPaletteEntries = [];
@@ -242,35 +260,13 @@
       date.textContent = message.date || '';
       header.append(speaker, date);
       const text = document.createElement('p');
-      const messageText = message.text ?? (typeof message === 'string' ? message : '');
-      const ccbCommand = /CCB\s*<=\s*\d+/i.exec(messageText);
-      if (ccbCommand) {
-        const commandEnd = ccbCommand.index + ccbCommand[0].length;
-        const resultText = messageText.slice(commandEnd);
-        const resultClass = /失敗|ファンブル/i.test(resultText)
-          ? 'ccb-result-failure'
-          : /成功|クリティカル|スペシャル|イクストリーム|エクストリーム/i.test(resultText)
-            ? 'ccb-result-success'
-            : '';
-        text.append(document.createTextNode(messageText.slice(0, commandEnd)));
-        if (resultClass) {
-          const result = document.createElement('span');
-          result.className = resultClass;
-          result.textContent = resultText;
-          text.append(result);
-        } else {
-          text.append(document.createTextNode(resultText));
-        }
-      } else {
-        text.textContent = messageText;
-      }
+      text.textContent = message.text ?? (typeof message === 'string' ? message : '');
       content.append(header, text);
       item.append(content);
       chatLog.append(item);
     }
     if (previousScrollBottom) chatLog.scrollTop = chatLog.scrollHeight;
 
-    if (document.activeElement !== speakerNameInput) speakerNameInput.value = chatState.speakerName ?? '';
     speakerAvatar.src = chatState.speakerAvatar ?? '';
     speakerAvatar.hidden = !chatState.speakerAvatar;
     const currentCharacter = characterChoice.value;
@@ -332,6 +328,53 @@
     chatInput.setRangeText(text, start, end, 'end');
     chatInput.focus();
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+
+  // ステータスコマンド形式（1s-10, 2h20 など）か簡易判定し、候補表示を抑制する。
+  const isStatusCommandText = (text) => /^(?:\d+(?:(?:\s*,\s*|\s+)\d+)*)?\s*(hp|mp|san|h|m|s)(\s*)(=|[+-])?(\s*)(\d+)$/i.test(text.trim());
+
+  let suggestionHighlightIndex = -1;
+
+  const hideSkillSuggestions = () => {
+    if (!skillSuggestions) return;
+    skillSuggestions.hidden = true;
+    skillSuggestions.replaceChildren();
+    suggestionHighlightIndex = -1;
+  };
+
+  const showSkillSuggestions = (query) => {
+    if (!skillSuggestions) return;
+    const q = query.replace(/\s+/g, ' ').trim();
+    if (!q || isStatusCommandText(q)) {
+      hideSkillSuggestions();
+      return;
+    }
+    const filtered = chatPaletteEntries.filter((entry) =>
+      entry.toLocaleLowerCase().includes(q.toLocaleLowerCase())
+    ).slice(0, 10);
+
+    if (filtered.length === 0) {
+      hideSkillSuggestions();
+      return;
+    }
+
+    skillSuggestions.replaceChildren();
+    for (const entry of filtered) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'skill-suggestion-item';
+      button.textContent = entry;
+      button.addEventListener('click', () => {
+        chatInput.value = '';
+        chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+        insertChatInputText(entry);
+        hideSkillSuggestions();
+        chatInput.focus();
+      });
+      skillSuggestions.append(button);
+    }
+    skillSuggestions.hidden = false;
+    suggestionHighlightIndex = -1;
   };
 
   const renderChatPalette = () => {
@@ -410,6 +453,10 @@
   });
 
   refreshChatButton.addEventListener('click', () => void refreshChatState({ force: true, includeCharacters: true }));
+
+  themeSelect.addEventListener('change', (event) => {
+    applyTheme(event.target.value);
+  });
   openChatPaletteButton.addEventListener('click', async () => {
     openChatPaletteButton.disabled = true;
     chatPaletteStatus.textContent = 'パレットを読み込んでいます…';
@@ -455,17 +502,14 @@
       chatInput.focus();
     }
   });
+  chatInput.addEventListener('input', () => {
+    showSkillSuggestions(chatInput.value);
+  });
+
   chatInput.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
     event.preventDefault();
     sendButton.click();
-  });
-  speakerNameInput.addEventListener('change', async () => {
-    try {
-      await sendRequest('CCFOLIA_CHAT_SET_SPEAKER', { name: speakerNameInput.value });
-    } catch (reason) {
-      chatStatus.textContent = reason.message;
-    }
   });
   characterChoice.addEventListener('change', async () => {
     const selected = characterChoice.selectedOptions[0];
@@ -474,7 +518,6 @@
     if (!name && !key) return;
     try {
       await sendRequest('CCFOLIA_CHAT_SELECT_CHARACTER', { name, key });
-      speakerNameInput.value = name;
       await refreshChatState({ force: true, includeCharacters: true });
     } catch (reason) {
       chatStatus.textContent = reason.message;
@@ -488,6 +531,7 @@
   }
   void applyAutoDeleteMode();
 
+  applyTheme(readStoredTheme());
   renderCharacterChoices();
   renderDiceControls();
   syncCommandMap();
