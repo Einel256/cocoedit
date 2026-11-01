@@ -38,8 +38,8 @@
       return true;
     }
     if (message?.type === 'CCFOLIA_GET_COMMAND_MAP') {
-      commandMapWrite.then(() => chrome.storage.local.get('ccfoliaCommandMap'))
-        .then((stored) => sendResponse({ ok: true, commandMap: stored.ccfoliaCommandMap ?? {} }))
+      commandMapWrite.then(() => chrome.storage.local.get(['ccfoliaCommandMap', 'ccfoliaCharacters']))
+        .then((stored) => sendResponse({ ok: true, commandMap: stored.ccfoliaCommandMap ?? {}, characters: stored.ccfoliaCharacters ?? [] }))
         .catch((reason) => sendResponse({ ok: false, error: String(reason) }));
       return true;
     }

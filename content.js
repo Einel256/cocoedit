@@ -277,18 +277,22 @@
     if (!lines.length) return null;
     const commands = [];
     for (const line of lines) {
-      const match = line.match(/^(\d+(?:(?:\s*,\s*|\s+)\d+)*)\s*(hp|mp|san|h|m|s)(\s*)(=|[+-])?(\s*)(\d+)$/i);
+      // 番号を省略可能にする。番号なしの場合は「現在の発言者」を対象とする（例: s-3, h+10, m=50）。
+      const match = line.match(/^(?:(\d+(?:(?:\s*,\s*|\s+)\d+)*)\s*)?(hp|mp|san|h|m|s)(\s*)(=|[+-])?(\s*)(\d+)$/i);
       if (!match) return null;
       const amount = Number(match[6]);
       if (!Number.isSafeInteger(amount) || amount > 999999) return null;
-      const numberText = match[1].trim();
+      const numberText = match[1] ? match[1].trim() : '';
+      const targetSpeaker = !numberText;
       let numbers;
-      if (/^[1-9]{2,}$/.test(numberText)) {
+      if (!numberText) {
+        numbers = [];
+      } else if (/^[1-9]{2,}$/.test(numberText)) {
         numbers = [...numberText];
       } else {
         numbers = numberText.split(/[\s,]+/);
       }
-      if (numbers.some((number) => !/^[1-9]$/.test(number))) return null;
+      if (!targetSpeaker && numbers.some((number) => !/^[1-9]$/.test(number))) return null;
       const operator = match[4];
       if (operator !== '=' && amount === 0) return null;
       const operation = operator === '='
@@ -300,6 +304,7 @@
             : match[3] ? 'decrease' : 'increase';
       commands.push({
         numbers: [...new Set(numbers)],
+        targetSpeaker,
         metricKey: ({ hp: 'hp', h: 'hp', mp: 'mp', m: 'mp', san: 'san', s: 'san' })[match[2].toLowerCase()],
         operation,
         amount
@@ -330,14 +335,30 @@
     try {
       const stored = await chrome.runtime.sendMessage({ type: 'CCFOLIA_GET_COMMAND_MAP' });
       const commandMap = stored?.commandMap ?? {};
-      const prepared = commands.map((command) => ({
-        ...command,
-        characterIds: command.numbers.map((number) => commandMap[number])
-      }));
-      const missing = prepared.flatMap((command, index) => command.characterIds.some((id) => !id)
-        ? commands[index].numbers.filter((number) => !commandMap[number]) : []);
+      const characters = stored?.characters ?? [];
+      const prepared = commands.map((command) => {
+        if (command.targetSpeaker) {
+          // 番号なし＝現在の発言者。発言名欄の値からキャラクターIDを解決する。
+          const speakerInput = document.querySelector('input[name="name"][placeholder="noname"]');
+          const speakerName = speakerInput?.value?.replace(/\s+/g, ' ').trim();
+          const character = speakerName ? characters.find((c) => c.name === speakerName) : null;
+          return {
+            ...command,
+            characterIds: character ? [character.id] : [],
+            speakerName
+          };
+        }
+        return {
+          ...command,
+          characterIds: command.numbers.map((number) => commandMap[number])
+        };
+      });
+      const missing = prepared.flatMap((command, index) => (command.characterIds.length === 0 || command.characterIds.some((id) => !id))
+        ? command.targetSpeaker
+          ? [`発言者「${command.speakerName || ''}」`]
+          : commands[index].numbers.filter((number) => !commandMap[number]) : []);
       if (!stored?.ok || missing.length) {
-        error(!stored?.ok ? '番号割り当てを取得できません。拡張機能を開いてキャラクター情報を取得してください。' : `番号${[...new Set(missing)].join('、')}のキャラクターを割り当ててください。`);
+        error(!stored?.ok ? '番号割り当てを取得できません。拡張機能を開いてキャラクター情報を取得してください。' : `対象が見つかりません（${[...new Set(missing)].join('、')}）。`);
         handlingChatCommand = false;
         return;
       }

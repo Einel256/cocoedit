@@ -53,6 +53,10 @@
     chrome.runtime.sendMessage({ type: 'CCFOLIA_SAVE_COMMAND_MAP', commandMap }).catch((reason) => {
       console.error('[CCFOLIA ステータス変更] 番号設定を同期できませんでした。', reason);
     });
+    // キャラクター一覧も保存（発言者対象のコマンドで名前からIDを解決するために使用する）。
+    chrome.storage.local.set({ ccfoliaCharacters: acquiredCharacters ?? [] }).catch((reason) => {
+      console.error('[CCFOLIA ステータス変更] キャラクター一覧を保存できませんでした。', reason);
+    });
   };
 
   const renderCharacterChoices = () => {
