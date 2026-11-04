@@ -61,6 +61,7 @@
 
   let acquiredCharacters = readStoredCharacters();
   let latestChatState = null;
+  let lastUnreadKey = '';
   // チャットパレットの取得結果を保存し、開くたびにCCFOLIA側を走査しなくて済むようにします。
   const readStoredPalette = () => {
     try {
@@ -309,13 +310,24 @@
       .map((character) => [character.name, character.key]));
     chatTabs.replaceChildren();
     let selectedTab = null;
+    // 未着通知中のタブには「●」の目印を付けます（選び直すと解除されます）。
+    const unreadByIndex = new Map((chatState.unreadTabs ?? []).map((item) => [item.index, item]));
     for (const tab of chatState.tabs ?? []) {
-      const option = new Option(tab.name, String(tab.index));
+      const unread = unreadByIndex.has(tab.index);
+      const option = new Option(unread ? `${tab.name} ●` : tab.name, String(tab.index));
       option.selected = Boolean(tab.selected);
       chatTabs.append(option);
       if (tab.selected) selectedTab = String(tab.index);
     }
     if (selectedTab !== null) chatTabs.value = selectedTab;
+
+    // 新しく検知された未着タブを、一度だけ状態表示に案内します（以降はタブの「●」が目印）。
+    const unreadTabs = chatState.unreadTabs ?? [];
+    const unreadKey = JSON.stringify(unreadTabs.map((item) => item.index));
+    if (unreadTabs.length && unreadKey !== lastUnreadKey) {
+      chatStatus.textContent = `未閲覧のタブに新着メッセージ: ${unreadTabs.map((item) => `「${item.name}」`).join('')}`;
+    }
+    lastUnreadKey = unreadKey;
 
     const previousScrollBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 48;
     chatLog.replaceChildren();

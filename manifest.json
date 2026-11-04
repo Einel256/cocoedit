@@ -3,10 +3,11 @@
   "name": "CCFOLIA ステータス変更",
   "version": "1.0.0",
   "description": "CCFOLIAチャットの操作と、テキストコマンドによるHP・MP・SAN変更を行う拡張機能",
-  "permissions": ["tabs", "storage"],
+  "permissions": ["tabs", "storage", "notifications"],
   "host_permissions": ["https://ccfolia.com/*"],
   "action": {
-    "default_title": "CCFOLIA ステータス変更"
+    "default_title": "CCFOLIA ステータス変更",
+    "default_icon": { "48": "icon.png", "128": "icon.png" }
   },
   "background": {
     "service_worker": "background.js"

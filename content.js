@@ -557,8 +557,72 @@
   };
 
   let cachedChatState = null;
+  // タブごとの未読ドット（お知らせ）を記録し、「自分が見ていないタブ」への新着メッセージを検知します。
+  // CCFOLIAのタブは新着があるとタブ名の脇に MuiBadge-dot の小さな点が表示されます。
+  let lastDotByTab = new Map(); // タブindex -> 前回の未読ドット有無
+  let lastUnreadByTab = new Map(); // タブindex -> 前回の数字バッジ値（ドットが使えない環境向けの補助）
+  let pendingUnread = new Set(); // 未通知のままのタブindex（そのタブを開くまで保持）
+  let unreadSeen = false; // 最初の1回はドットの基準を記録するだけにします（誤通知防止）
+
+  const unreadTabsSnapshot = () => [...pendingUnread].map((index) => ({
+    index,
+    name: cachedChatState?.tabs?.find((candidate) => candidate.index === index)?.name ?? `チャットタブ${index + 1}`
+  }));
+
+  const attachUnreadTabs = (state) => ({ ...state, unreadTabs: unreadTabsSnapshot() });
+
+  const notifyUnreadListeners = (items) => {
+    if (!items.length) return;
+    try {
+      chrome.runtime.sendMessage({ type: 'CCFOLIA_CHAT_UNREAD_NOTIFY', items }).catch?.(() => {});
+    } catch {
+      // 制御ウィンドウが閉じていてもデスクトップ通知は background が処理するため、失敗は無視します。
+    }
+  };
+
+  const clearUnreadNotifications = () => {
+    try {
+      chrome.runtime.sendMessage({ type: 'CCFOLIA_CHAT_UNREAD_CLEAR' }).catch?.(() => {});
+    } catch {
+      // 失敗は無視します。
+    }
+  };
+
+  const updateUnreadTracking = (tabs) => {
+    const newlyChanged = [];
+    const changedByTab = new Map();
+    for (const tab of tabs) {
+      const previousDot = lastDotByTab.get(tab.index);
+      const previousBadge = lastUnreadByTab.get(tab.index);
+      lastDotByTab.set(tab.index, tab.selected ? false : tab.dot);
+      lastUnreadByTab.set(tab.index, tab.badge === null ? (previousBadge ?? 0) : tab.badge);
+      if (!unreadSeen) continue;
+      if (tab.selected) {
+        // そのタブを見ているので、通知は不要です。
+        if (pendingUnread.delete(tab.index) && !pendingUnread.size) clearUnreadNotifications();
+        continue;
+      }
+      // 未読ドットが新しく付いたら新着です。
+      if (tab.dot && previousDot === false) {
+        pendingUnread.add(tab.index);
+        if (!changedByTab.has(tab.index)) changedByTab.set(tab.index, tab.name);
+      }
+      // 数字バッジの増分も参考として検知します（ドットが出ない表示環境向け）。
+      if (tab.badge !== null && previousBadge !== undefined && tab.badge > previousBadge) {
+        pendingUnread.add(tab.index);
+        if (!changedByTab.has(tab.index)) changedByTab.set(tab.index, tab.name);
+      }
+      // ドットが消えた＝CCFOLIA側で既読に変わったので、通知を解除します。
+      if (!tab.dot && previousDot === true && pendingUnread.delete(tab.index) && !pendingUnread.size) {
+        clearUnreadNotifications();
+      }
+    }
+    unreadSeen = true;
+    notifyUnreadListeners([...changedByTab].map(([index, name]) => ({ index, name })));
+  };
+
   const getChatState = async ({ force = true, includeCharacters = false } = {}) => {
-    if (!force && !chatDrawerCloseButton() && cachedChatState) return cachedChatState;
+    if (!force && !chatDrawerCloseButton() && cachedChatState) return attachUnreadTabs(cachedChatState);
     const state = await withChatDrawer(async () => {
     const tabs = [...document.querySelectorAll('[role="tablist"] button')]
       .filter((button) => button.isConnected)
@@ -572,9 +636,23 @@
         for (const element of [...clone.querySelectorAll('*')]) {
           if (element.children.length === 0 && /^\d+$/.test(normalizedText(element))) element.remove();
         }
+        const name = normalizedText(clone);
+        // 除去した残りが純数字なら、その数値をタブの未読バッジとして読み取ります。
+        const raw = normalizedText(button);
+        const suffix = raw.startsWith(name) ? raw.slice(name.length).trim() : '';
+        const badge = /^\d+$/.test(suffix) ? Number(suffix) : null;
+        // 新着のお知らせドット（MuiBadge-dot）の有無を読み取ります。見えていないドットは未着ではない扱いにします。
+        const badgeElement = button.querySelector('.MuiBadge-badge');
+        const dot = Boolean(
+          badgeElement
+          && !badgeElement.classList.contains('MuiBadge-invisible')
+          && visible(badgeElement)
+        );
         return {
           index,
-          name: normalizedText(clone),
+          name,
+          badge,
+          dot,
           selected: button.getAttribute('aria-selected') === 'true' || button.classList.contains('Mui-selected')
         };
       })
@@ -632,7 +710,8 @@
     };
     });
     cachedChatState = state;
-    return state;
+    updateUnreadTracking(state.tabs);
+    return attachUnreadTabs(state);
   };
 
   const setReactInputValue = (input, value) => {
@@ -679,6 +758,8 @@
 
   const selectChatTab = async ({ index }) => withChatDrawer(async () => {
     clickChatTab(index);
+    // 開いたタブの未着通知を解除します（他に通知が残っていなければデスクトップ通知も消します）。
+    if (pendingUnread.delete(Number(index)) && !pendingUnread.size) clearUnreadNotifications();
     await wait(20);
     return { ok: true };
   });
