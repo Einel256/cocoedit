@@ -16,11 +16,16 @@
       </header>
       <details class="setup-section">
         <summary>設定・キャラクター情報</summary>
-        <section class="theme-section" aria-label="テーマ">
+        <section class="theme-section" aria-label="テーマ・フォント">
           <label for="theme-select">テーマ</label>
           <select id="theme-select">
             <option value="dark">Dark</option>
             <option value="original">Original</option>
+          </select>
+          <label for="font-select">フォント</label>
+          <select id="font-select">
+            <option value="default">デフォルト</option>
+            <option value="jetbrains">JetBrains Mono NF（11pt）</option>
           </select>
         </section>
         <section class="skip-automation" aria-label="メッセージ自動削除">
@@ -34,13 +39,13 @@
         <button id="acquire-all" type="button" title="キャラ情報・チャットパレット・チャットログを一括で取得します">一括取得</button>
         <div id="characters" aria-label="キャラクター番号割り当て"></div>
         <output id="status" role="status">キャラ情報を取得してください。</output>
-        <small>番号は1〜9です。例: 1s-10、2h20、8m=10　　入力欄からは /m タブ・/g 技能・/c キャラ を選べます</small>
+        <small>番号は1〜9です。例: 1s-10、2h20、8m=10　　入力欄からは /m タブ・/g 技能・/c キャラ・/s シーン を選べます</small>
       </details>
 
       <section class="chat-section" aria-label="ルームチャット">
         <ol id="chat-log" aria-live="polite"></ol>
         <div class="chat-toolbar">
-          <select id="chat-tabs" class="chat-tabs" aria-label="チャットタブ"></select>
+          <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="チャットタブ"></div>
           <button id="refresh-chat" type="button" aria-label="チャットを更新">更新</button>
         </div>
         <div class="speaker-row">
@@ -53,10 +58,12 @@
         <section id="chat-palette-panel" class="chat-palette-panel" aria-label="チャットパレット" hidden>
           <div class="chat-palette-toolbar">
             <strong>技能値パレット</strong>
+          </div>
+          <ul id="chat-palette-items" class="chat-palette-items"></ul>
+          <div class="chat-palette-footer">
             <button id="refresh-chat-palette" type="button" aria-label="チャットパレットを再取得">再取得</button>
             <button id="close-chat-palette" type="button" aria-label="パレットを閉じる">閉じる</button>
           </div>
-          <ul id="chat-palette-items" class="chat-palette-items"></ul>
           <output id="chat-palette-status" role="status"></output>
         </section>
         <div id="dice-shortcuts" class="dice-shortcuts" aria-label="ダイスショートカット"></div>
@@ -66,6 +73,10 @@
           <div id="command-suggestions" class="skill-suggestions" hidden role="listbox" aria-label="コマンド候補"></div>
           <button id="clear-message" type="button">クリア</button>
           <button id="send-message" type="button">送信</button>
+        </div>
+        <div class="composer-speaker" id="composer-speaker">
+          <img id="composer-speaker-avatar" class="composer-speaker-avatar" alt="">
+          <span id="composer-speaker-name"></span>
         </div>
         <output id="chat-status" role="status"></output>
       </section>

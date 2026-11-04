@@ -10,6 +10,8 @@
   const chatInput = document.getElementById('chat-input');
   const sendButton = document.getElementById('send-message');
   const clearMessageButton = document.getElementById('clear-message');
+  const composerSpeakerAvatar = document.getElementById('composer-speaker-avatar');
+  const composerSpeakerName = document.getElementById('composer-speaker-name');
   const refreshChatButton = document.getElementById('refresh-chat');
   const openChatPaletteButton = document.getElementById('open-chat-palette');
   const speakerAvatar = document.getElementById('speaker-avatar');
@@ -27,7 +29,9 @@
   const settingsToggle = document.getElementById('toggle-settings');
   const setupSection = document.querySelector('.setup-section');
   const themeSelect = document.getElementById('theme-select');
+  const fontSelect = document.getElementById('font-select');
   const THEME_STORAGE_KEY = 'ccfolia-theme-v1';
+  const FONT_STORAGE_KEY = 'ccfolia-font-v1';
   const CHARACTER_STORAGE_KEY = 'ccfolia-status-characters-v1';
   const PALETTE_STORAGE_KEY = 'ccfolia-chat-palette-v1';
   settingsToggle?.addEventListener('click', () => {
@@ -58,10 +62,36 @@
     themeSelect.value = theme;
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   };
+  themeSelect?.addEventListener('change', (event) => {
+    applyTheme(event.target.value);
+  });
+
+  // フォント選択。JetBrainsMonoNF-Regular（11pt）に切り替えられるようにします。
+  const readStoredFont = () => {
+    try {
+      const stored = localStorage.getItem(FONT_STORAGE_KEY);
+      return stored === 'jetbrains' || stored === 'default' ? stored : 'default';
+    } catch {
+      return 'default';
+    }
+  };
+  const applyFont = (font) => {
+    const value = font === 'jetbrains' ? 'jetbrains' : 'default';
+    if (value === 'jetbrains') document.body.setAttribute('data-font', 'jetbrains');
+    else document.body.removeAttribute('data-font');
+    if (fontSelect) fontSelect.value = value;
+    localStorage.setItem(FONT_STORAGE_KEY, value);
+  };
+  fontSelect?.addEventListener('change', (event) => {
+    applyFont(event.target.value);
+  });
 
   let acquiredCharacters = readStoredCharacters();
   let latestChatState = null;
   let lastUnreadKey = '';
+  // 選択中のチャットタブ（インデックスの文字列。null なら未取得）。
+  // CCFOLIA側の状態（tab.selected）と、ボタンを押したときの即時反映の両方を拾います。
+  let selectedTabIndex = null;
   // チャットパレットの取得結果を保存し、開くたびにCCFOLIA側を走査しなくて済むようにします。
   const readStoredPalette = () => {
     try {
@@ -74,6 +104,20 @@
   let chatPaletteEntries = readStoredPalette() ?? [];
   const savePaletteEntries = () => {
     localStorage.setItem(PALETTE_STORAGE_KEY, JSON.stringify(chatPaletteEntries));
+  };
+  // シーン一覧も保存し、/s を選ぶたびにCCFOLIA側のシーンパネルを開かなくて済むようにします。
+  const SCENE_STORAGE_KEY = 'ccfolia-scene-list-v1';
+  const readStoredScenes = () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(SCENE_STORAGE_KEY) || 'null');
+      return Array.isArray(stored) ? stored.filter((entry) => typeof entry === 'string') : null;
+    } catch {
+      return null;
+    }
+  };
+  let sceneEntries = readStoredScenes() ?? [];
+  const saveSceneEntries = () => {
+    localStorage.setItem(SCENE_STORAGE_KEY, JSON.stringify(sceneEntries));
   };
 
   const syncCommandMap = () => {
@@ -131,9 +175,18 @@
     return result;
   };
 
-  chatTabs.addEventListener('change', async () => {
-    const index = Number(chatTabs.value);
+  // チャットタブはCCFOLIA風のボタン列です。クリックで切り替えます。
+  chatTabs.addEventListener('click', async (event) => {
+    const button = event.target.closest('button.chat-tab');
+    if (!button || button.disabled) return;
+    const index = Number(button.dataset.index);
     if (!Number.isInteger(index)) return;
+    // 押した時点で選択表示を先に切り替え、CCFOLIA側の切替が確定してから状態を同期します。
+    selectedTabIndex = String(index);
+    for (const tab of chatTabs.querySelectorAll('button.chat-tab')) {
+      tab.classList.toggle('is-selected', tab === button);
+      tab.setAttribute('aria-selected', tab === button ? 'true' : 'false');
+    }
     try {
       await sendRequest('CCFOLIA_CHAT_SELECT_TAB', { index });
       await refreshChatState();
@@ -310,16 +363,28 @@
       .map((character) => [character.name, character.key]));
     chatTabs.replaceChildren();
     let selectedTab = null;
-    // 未着通知中のタブには「●」の目印を付けます（選び直すと解除されます）。
+    // 未着通知中のタブには赤い「●」（未読バッジ）を付けます（選び直すと解除されます）。
     const unreadByIndex = new Map((chatState.unreadTabs ?? []).map((item) => [item.index, item]));
     for (const tab of chatState.tabs ?? []) {
       const unread = unreadByIndex.has(tab.index);
-      const option = new Option(unread ? `${tab.name} ●` : tab.name, String(tab.index));
-      option.selected = Boolean(tab.selected);
-      chatTabs.append(option);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chat-tab';
+      button.dataset.index = String(tab.index);
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', tab.selected ? 'true' : 'false');
+      button.title = tab.name;
+      const label = document.createElement('span');
+      label.className = 'chat-tab-label';
+      label.textContent = tab.name;
+      button.append(label);
+      if (unread) button.append(Object.assign(document.createElement('span'), { className: 'chat-tab-badge' }));
+      button.classList.toggle('is-selected', Boolean(tab.selected));
+      button.classList.toggle('has-unread', unread);
+      chatTabs.append(button);
       if (tab.selected) selectedTab = String(tab.index);
     }
-    if (selectedTab !== null) chatTabs.value = selectedTab;
+    if (selectedTab !== null) selectedTabIndex = selectedTab;
 
     // 新しく検知された未着タブを、一度だけ状態表示に案内します（以降はタブの「●」が目印）。
     const unreadTabs = chatState.unreadTabs ?? [];
@@ -373,6 +438,10 @@
       chatLog.append(item);
     }
     if (previousScrollBottom) chatLog.scrollTop = chatLog.scrollHeight;
+
+    composerSpeakerAvatar.src = chatState.speakerAvatar ?? '';
+    composerSpeakerAvatar.hidden = !chatState.speakerAvatar;
+    composerSpeakerName.textContent = `入力中: ${chatState.speakerName || '（発言者なし）'}`;
 
     speakerAvatar.src = chatState.speakerAvatar ?? '';
     speakerAvatar.hidden = !chatState.speakerAvatar;
@@ -500,17 +569,19 @@
     suggestionHighlightIndex = -1;
   };
 
-  /* /m /g /c コマンド。fzf風のTab補完で選択します。
-     /m = チャットタブ移動 /g = 技能選択（チャットパレット） /c = キャラ選択 */
+  /* /m /g /c /s コマンド。fzf風のTab補完で選択します。
+     /m = チャットタブ移動 /g = 技能選択（チャットパレット） /c = キャラ選択 /s = シーン選択 */
   const commandSuggestions = document.getElementById('command-suggestions');
   let commandMode = null; // 'm' | 'g' | 'c'
   let commandMatches = [];
   let commandIndex = 0;
   let commandQuery = null;
-  // 「/m」「/g」「/c」の入力をコマンドとして扱います（半角スペースは任意）。
+  // 「/m」「/g」「/c」「/s」の入力をコマンドとして扱います（半角スペースは任意）。
+  // ただし、本家の「/scene シーン名」コマンドを手入力したときはセレクタに奪わず、そのまま送信させます。
   const parseCommandInput = (value) => {
-    const match = value.match(/^\/([mgc])(.*)$/);
+    const match = value.match(/^\/([mgcs])(.*)$/);
     if (!match) return null;
+    if (match[1] === 's' && value.toLowerCase().startsWith('/scene')) return null;
     return { mode: match[1], query: match[2].replace(/^\s+/, '') };
   };
 
@@ -520,6 +591,10 @@
     }
     if (mode === 'g') {
       return chatPaletteEntries.map((entry) => ({ label: entry, value: entry }));
+    }
+    if (mode === 's') {
+      // シーンの切替は、実質的に本家の「/scene シーン名」チャットコマンドを送るのと同じです。
+      return sceneEntries.map((entry) => ({ label: entry, value: `/scene ${entry}` }));
     }
     return (latestChatState?.characters ?? [])
       .map((character) => ({
@@ -538,6 +613,7 @@
   const commandEmptyMessage = (mode) => {
     if (mode === 'm') return '一致するチャットタブがありません。';
     if (mode === 'g') return '一致する技能がありません。「一括取得」やパレットの「再取得」で取得してください。';
+    if (mode === 's') return 'シーン候補がありません。入力欄が空の状態から取得するか、「一括取得」で取得してください。';
     return 'キャラクター候補がありません。「更新」または「一括取得」で候補を取得してください。';
   };
 
@@ -610,6 +686,18 @@
 
   const executeCommand = async () => {
     const count = commandMatches.length;
+    // シーンは初回に候補が無くても、その場でCCFOLIA側のシーンパネルを開いて取得してから
+    // 候補を表示します（自動実行はしないので、候補が見えたらもう一度Enterします）。
+    if (commandMode === 's' && !sceneEntries.length) {
+      try {
+        await ensureSceneEntries();
+        commandIndex = 0;
+        renderCommandSuggestions();
+      } catch (reason) {
+        chatStatus.textContent = reason.message;
+      }
+      return;
+    }
     if (!count || commandIndex < 0 || commandIndex >= count) {
       chatStatus.textContent = commandEmptyMessage(commandMode ?? 'm');
       chatInput.value = '';
@@ -624,6 +712,24 @@
       hideCommandSuggestions();
       chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length;
       chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      chatInput.focus();
+      return;
+    }
+    if (commandMode === 's') {
+      // シーン選択。本家の「/scene シーン名」コマンドを送るのと同じです。
+      const commandText = `/scene ${selected.label}`;
+      // 決定したらすぐにメッセージ欄を空にします（送信に失敗した場合のみ元に戻します）。
+      chatInput.value = '';
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      try {
+        await sendRequest('CCFOLIA_CHAT_SEND', { text: commandText });
+        chatStatus.textContent = `シーンを「${selected.label}」に切り替えました。`;
+      } catch (reason) {
+        chatStatus.textContent = reason.message;
+        chatInput.value = commandText;
+        chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
       chatInput.focus();
       return;
     }
@@ -700,6 +806,7 @@
       storeAcquiredCharacters(result.characters);
       const characterCount = acquiredCharacters.length;
       let paletteCount = null;
+      let sceneCount = null;
       chatPalettePanel.hidden = false;
       chatPaletteItems.replaceChildren();
       chatPaletteStatus.textContent = 'チャットパレットを取得しています…';
@@ -712,8 +819,16 @@
         chatPalettePanel.hidden = true;
         chatStatus.textContent = `チャットパレット: ${reason.message}`;
       }
+      try {
+        status.textContent = 'シーン一覧を取得しています…';
+        await fetchSceneEntries();
+        sceneCount = sceneEntries.length;
+      } catch (reason) {
+        console.error('[CCFOLIA ステータス変更]', reason);
+        chatStatus.textContent = `シーン一覧: ${reason.message}`;
+      }
       await refreshChatState({ force: true, includeCharacters: true });
-      status.textContent = `一括取得しました（キャラクター${characterCount}人${paletteCount !== null ? `、パレット${paletteCount}件` : ''}）。`;
+      status.textContent = `一括取得しました（キャラクター${characterCount}人${paletteCount !== null ? `、パレット${paletteCount}件` : ''}${sceneCount !== null ? `、シーン${sceneCount}件` : ''}）。`;
     } catch (reason) {
       console.error('[CCFOLIA ステータス変更]', reason);
       status.textContent = reason instanceof Error ? reason.message : String(reason);
@@ -743,15 +858,28 @@
 
   refreshChatButton.addEventListener('click', () => void refreshChatState({ force: true, includeCharacters: true }));
 
-  themeSelect.addEventListener('change', (event) => {
-    applyTheme(event.target.value);
-  });
   // CCFOLIA側のチャットパレットを開いて全項目を走査し、結果をlocalStorageへ保存します。
   const fetchChatPaletteEntries = async () => {
     const result = await sendRequest('CCFOLIA_CHAT_PALETTE');
     chatPaletteEntries = result.entries ?? [];
     savePaletteEntries();
     return chatPaletteEntries;
+  };
+
+  // CCFOLIA側のシーンパネルを開いて全シーン名を走査し、結果をlocalStorageへ保存します。
+  const fetchSceneEntries = async () => {
+    const result = await sendRequest('CCFOLIA_SCENE_LIST');
+    sceneEntries = result.entries ?? [];
+    saveSceneEntries();
+    return sceneEntries;
+  };
+  // /s で候補が出ないときに、最初の1回だけ自動で取得します。
+  const ensureSceneEntries = async () => {
+    if (sceneEntries.length) return sceneEntries;
+    chatStatus.textContent = 'シーン一覧を取得しています…';
+    await fetchSceneEntries();
+    chatStatus.textContent = '';
+    return sceneEntries;
   };
 
   // 保存済みの一覧に関係なく、CCFOLIA側を走査し直して更新します。
@@ -792,30 +920,51 @@
     chatInput.focus();
   });
   sendButton.addEventListener('click', async () => {
+    if (sendButton.disabled) return;
     const originalText = chatInput.value;
     if (!originalText.trim()) return;
     // CCFOLIA側の送信処理を待たず、入力欄を即座にクリアします（失敗時は元の内容に戻します）。
     chatInput.value = '';
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     sendButton.disabled = true;
+    let failure = null;
     try {
-      const selectedTab = chatTabs.value;
+      const selectedTab = selectedTabIndex;
       await sendRequest('CCFOLIA_CHAT_SEND', {
         text: originalText,
-        ...(selectedTab !== '' ? { tabIndex: Number(selectedTab) } : {})
+        ...(selectedTab !== null && selectedTab !== '' ? { tabIndex: Number(selectedTab) } : {})
       });
-      await refreshChatState();
     } catch (reason) {
-      chatStatus.textContent = reason.message;
+      failure = reason;
+    }
+    // 送信が確定した時点で入力を受け付けるようにします。ログの再取得は後処理で行うため、
+    // 完了までボタンを押せなくなる「送信できない時間」を作りません。
+    sendButton.disabled = false;
+    if (failure) {
+      chatStatus.textContent = failure.message;
       chatInput.value = originalText;
       chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-    } finally {
-      sendButton.disabled = false;
       chatInput.focus();
+      return;
     }
+    chatInput.focus();
+    void refreshChatState();
   });
   chatInput.addEventListener('input', () => {
     if (!renderCommandSuggestions()) showSkillSuggestions(chatInput.value);
+  });
+
+  // CCFOLIA側でチャットログが変わるたび、10秒ポーリングを待たずに即座に反映します。
+  // content.js が CCFOLIA_CHAT_LOG_PUSH で最新メッセージ一覧を送ってくるので書き換えます。
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type !== 'CCFOLIA_CHAT_LOG_PUSH' || !Array.isArray(message.messages)) return undefined;
+    if (!latestChatState) return undefined; // 初回は通常のポーリングで取得します。
+    const previous = latestChatState.messages ?? [];
+    const incoming = message.messages;
+    if (incoming.length === previous.length
+      && JSON.stringify(incoming.at(-1) ?? '') === JSON.stringify(previous.at(-1) ?? '')) return undefined;
+    renderChatState({ ...latestChatState, messages: incoming });
+    return undefined;
   });
 
   chatInput.addEventListener('keydown', (event) => {
@@ -872,6 +1021,7 @@
   void applyAutoDeleteMode();
 
   applyTheme(readStoredTheme());
+  applyFont(readStoredFont());
   renderCharacterChoices();
   renderDiceControls();
   syncCommandMap();

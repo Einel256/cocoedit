@@ -202,9 +202,15 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 .message-header strong { color: #888; font-size: 13px; font-weight: 500; }
 .message-header small { margin: 0; color: #6d7484; font-size: 10px; }
 .message-content p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #dcdfe6; font-size: 13px; line-height: 1.55; }
-/* チャットタブ */
+/* チャットタブ（CCFOLIA風のボタン列。未読は赤い●） */
 .chat-toolbar { display: flex; align-items: center; gap: 6px; padding-top: 2px; }
-.chat-tabs { flex: 1; height: 34px; }
+.chat-tabs { flex: 1 1 auto; display: flex; align-items: flex-end; gap: 2px; min-width: 0; overflow-x: auto; padding: 2px 2px 0; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+.chat-tabs::-webkit-scrollbar { display: none; }
+.chat-tab { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; margin: 0; padding: 6px 9px; border: none; border-radius: 6px 6px 0 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; white-space: nowrap; }
+.chat-tab:hover:not(.is-selected) { color: var(--text); background: rgb(255 255 255 / .06); }
+.chat-tab.is-selected { color: #fff; border-bottom-color: var(--accent); font-weight: 600; }
+.chat-tab.has-unread { color: var(--text); font-weight: 600; }
+.chat-tab-badge { position: absolute; top: 3px; right: 1px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 4px var(--accent); }
 #refresh-chat { flex: 0 0 auto; padding: 6px 12px; color: #b7bdc9; }
 
 /* 発言者行 */
@@ -235,10 +241,12 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 }
 .chat-palette-toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
 .chat-palette-toolbar strong { flex: 0 0 auto; font-size: 12px; font-weight: 500; }
-#close-chat-palette { flex: 0 0 auto; padding: 5px 9px; }
+/* パレット下部の再取得・閉じるボタン */
+.chat-palette-footer { display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--line); }
+.chat-palette-footer button { min-width: 64px; padding: 5px 10px; }
 .chat-palette-items { display: flex; flex: 1 1 auto; flex-direction: column; gap: 3px; min-height: 0; overflow: auto; margin: 0; padding: 6px 10px; list-style: none; scrollbar-width: thin; scrollbar-color: #454c5c transparent; }
 .chat-palette-items button { overflow: hidden; width: 100%; padding: 8px 10px; text-align: left; text-overflow: ellipsis; white-space: nowrap; border-radius: 6px; font-size: 13.5px; }
-#chat-palette-status { flex: 0 0 auto; min-height: 16px; margin: 0; padding: 4px 10px 6px; color: #8a91a0; font-size: 11px; border-top: 1px solid var(--line); }
+#chat-palette-status { flex: 0 0 auto; min-height: 16px; margin: 0; padding: 2px 10px 6px; color: #8a91a0; font-size: 11px; }
 
 /* ダイス（横一列のコンパクトな並び） */
 .dice-shortcuts { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 4px; padding: 2px 0; }
@@ -288,3 +296,16 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 #send-message { grid-column: 3; }
 #clear-message:hover:not(:disabled), #send-message:hover:not(:disabled) { background: rgb(255 255 255 / .07); color: var(--text); }
 #chat-status { min-height: 16px; margin: 0; color: #f0a8b8; font-size: 11px; }
+/* 「誰の名前で入力するか」の表示（入力欄のすぐ下） */
+.composer-speaker { display: flex; align-items: center; gap: 6px; min-height: 16px; padding: 0 2px; color: #a9b0bd; font-size: 11px; }
+.composer-speaker-avatar { width: 18px; height: 18px; border-radius: 4px; object-fit: cover; background: rgb(52 57 70); }
+.composer-speaker:empty, .composer-speaker-avatar[hidden] { display: none; }
+
+/* フォント選択: JetBrainsMonoNF-Regular（11pt）。
+   OSにインストールされているフォントのファミリー名が異なる場合は、
+   以下の候補を実際の名前に合わせて調整してください。 */
+body[data-font="jetbrains"] { font-family: "JetBrainsMono NF", "JetBrains Mono NF", "JetBrainsMonoNF-Regular", "JetBrains Mono", ui-monospace, monospace; font-size: 11pt; }
+body[data-font="jetbrains"] button,
+body[data-font="jetbrains"] input,
+body[data-font="jetbrains"] select,
+body[data-font="jetbrains"] textarea { font-family: inherit; }

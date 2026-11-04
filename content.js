@@ -557,6 +557,41 @@
   };
 
   let cachedChatState = null;
+  // ルームチャットのログ行を読み取ります。getChatState（10秒ポーリング）と
+  // ログ変化時の即時プッシュの両方から使います。
+  const readRoomLogMessages = () => {
+    const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
+    return logList
+      ? [...logList.querySelectorAll('[data-index]')]
+        .filter((element) => element.isConnected)
+        .map((element) => {
+          const item = element.querySelector('.MuiListItem-root') || element;
+          const header = item.querySelector('.MuiListItemText-primary');
+          const date = header?.querySelector('.MuiTypography-caption');
+          const speaker = header
+            ? [...header.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent).join('').trim()
+            : '';
+          const secondary = item.querySelector('.MuiListItemText-secondary');
+          let text = secondary?.innerText?.trim() || '';
+          if (!text) {
+            // Dice result rows can use a different MUI layout without the usual
+            // secondary text node. Exclude the author/date header so it does not
+            // get copied into the message body as if it were dice output.
+            const body = item.cloneNode(true);
+            body.querySelectorAll('.MuiListItemText-primary, [class*="MuiListItemAvatar"]').forEach((element) => element.remove());
+            text = normalizedText(body);
+          }
+          const avatarImage = item.querySelector('[class*="MuiListItemAvatar"] img.MuiAvatar-img, [class*="MuiListItemAvatar"] img, img[alt="avatar"]');
+          const avatar = avatarImage?.getAttribute('src')
+            || avatarImage?.getAttribute('data-src')
+            || avatarImage?.currentSrc
+            || avatarImage?.src
+            || '';
+          return { speaker, date: date?.textContent?.replace(/^\s*-\s*/, '').trim() || '', text, avatar };
+        })
+        .filter((message) => message.text || message.speaker)
+      : [];
+  };
   // タブごとの未読ドット（お知らせ）を記録し、「自分が見ていないタブ」への新着メッセージを検知します。
   // CCFOLIAのタブは新着があるとタブ名の脇に MuiBadge-dot の小さな点が表示されます。
   let lastDotByTab = new Map(); // タブindex -> 前回の未読ドット有無
@@ -657,37 +692,7 @@
         };
       })
       .filter((tab) => tab.name);
-    const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
-    const messages = logList
-      ? [...logList.querySelectorAll('[data-index]')]
-        .filter((element) => element.isConnected)
-        .map((element) => {
-          const item = element.querySelector('.MuiListItem-root') || element;
-          const header = item.querySelector('.MuiListItemText-primary');
-          const date = header?.querySelector('.MuiTypography-caption');
-          const speaker = header
-            ? [...header.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent).join('').trim()
-            : '';
-          const secondary = item.querySelector('.MuiListItemText-secondary');
-          let text = secondary?.innerText?.trim() || '';
-          if (!text) {
-            // Dice result rows can use a different MUI layout without the usual
-            // secondary text node. Exclude the author/date header so it does not
-            // get copied into the message body as if it were dice output.
-            const body = item.cloneNode(true);
-            body.querySelectorAll('.MuiListItemText-primary, [class*="MuiListItemAvatar"]').forEach((element) => element.remove());
-            text = normalizedText(body);
-          }
-          const avatarImage = item.querySelector('[class*="MuiListItemAvatar"] img.MuiAvatar-img, [class*="MuiListItemAvatar"] img, img[alt="avatar"]');
-          const avatar = avatarImage?.getAttribute('src')
-            || avatarImage?.getAttribute('data-src')
-            || avatarImage?.currentSrc
-            || avatarImage?.src
-            || '';
-          return { speaker, date: date?.textContent?.replace(/^\s*-\s*/, '').trim() || '', text, avatar };
-        })
-        .filter((message) => message.text || message.speaker)
-      : [];
+    const messages = readRoomLogMessages();
     const speaker = document.querySelector('input[name="name"][placeholder="noname"]');
     const speakerImage = document.querySelector('button[aria-label="キャラクター選択"] img.MuiAvatar-img');
     const diceButtons = [...document.querySelectorAll('button[aria-label^="D"]')]
@@ -713,6 +718,45 @@
     updateUnreadTracking(state.tabs);
     return attachUnreadTabs(state);
   };
+
+  // 「ログが変わったらすぐ制御ウィンドウへ反映する」人がいました。10秒ポーリングを待たず、
+  // ログDOMの変化を検知して、そのたびに最新のメッセージ一覧を制御ウィンドウへ送ります。
+  let lastPushedLogSignature = '';
+  let pushLogTimer = null;
+  const pushRoomLogUpdate = () => {
+    pushLogTimer = null;
+    const messages = readRoomLogMessages();
+    const signature = `${messages.length}:${JSON.stringify(messages.at(-1) ?? '')}`;
+    if (signature === lastPushedLogSignature) return;
+    lastPushedLogSignature = signature;
+    try {
+      chrome.runtime.sendMessage({ type: 'CCFOLIA_CHAT_LOG_PUSH', messages }).catch?.(() => {});
+    } catch {
+      // 制御ウィンドウが開いていなければ送出先がなくても問題ありません（10秒ポーリングで反映します）。
+    }
+  };
+  const watchRoomLog = () => {
+    const observer = new MutationObserver(() => {
+      clearTimeout(pushLogTimer);
+      pushLogTimer = setTimeout(pushRoomLogUpdate, 250);
+    });
+    const attach = () => {
+      const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
+      if (logList) {
+        try { observer.disconnect(); } catch { /* 無視 */ }
+        observer.observe(logList, { childList: true, subtree: true, characterData: true });
+      }
+    };
+    attach();
+    // ログ要素がチャットウィンドウの開閉で差し替えられるため、一定間隔で付け直します。
+    setInterval(() => {
+      const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
+      if (logList) attach();
+    }, 5000);
+    // 付け直しの瞬間の取りこぼしを防ぐため、初回は一度即pushします。
+    pushRoomLogUpdate();
+  };
+  watchRoomLog();
 
   const setReactInputValue = (input, value) => {
     const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -740,18 +784,18 @@
     setReactInputValue(textarea, messageText);
     sendButton.click();
     // Wait for CCFOLIA's React submit handler to clear the draft before the
-    // control window immediately reads the updated room log. Timeout is kept
-    // short so the send flow does not block the control window for long.
-    await waitFor(() => textarea.isConnected && textarea.value === '', 800);
+    // control window reads the updated room log. Kept very short so repeated
+    // dice/SAN sends do not create a noticeable "cannot send" window.
+    await waitFor(() => textarea.isConnected && textarea.value === '', 300);
     if (!parseChatCommands(messageText)) {
       const expectedText = messageText.replace(/\s+/g, ' ').trim();
       await waitFor(() => {
         const entries = [...document.querySelectorAll('ul[aria-label="ルームチャット"][role="log"] [data-index]')];
         const latest = entries.at(-1);
         return latest && normalizedText(latest).includes(expectedText);
-      }, 1200);
+      }, 300);
     } else {
-      await wait(100);
+      await wait(60);
     }
     return { ok: true };
   });
@@ -813,7 +857,7 @@
     if (closeButton) closeButton.click();
     else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   };
-  const readChatPaletteEntries = async (root) => {
+  const findPaletteDialogScrollableList = (root) => {
     // root がチャットパレットのヘッダー部分（MuiAppBar-root など）の場合、
     // 親を遡って .MuiDialogContent-root.scrollable-list を見つけます。
     let scrollableList = root.matches('.MuiDialogContent-root.scrollable-list')
@@ -830,18 +874,18 @@
         ancestor = ancestor.parentElement;
       }
     }
+    return scrollableList;
+  };
+  // ダイアログのスクロール領域を最下部まで走査します。collectLabels(scrollableList, entries)
+  // が読み取った項目を entries へ加え、登録した項目数を返す想定です。
+  const scanScrollableList = async (root, collectLabels) => {
+    const scrollableList = findPaletteDialogScrollableList(root);
     if (!scrollableList) throw new Error('チャットパレットのスクロール領域が見つかりません。');
 
-    const itemLabelSelector = '.MuiListItemButton-root[role="button"] .MuiListItemText-primary';
     const entries = new Set();
     let itemLabelCount = 0;
     const collect = () => {
-      itemLabelCount = 0;
-      for (const label of scrollableList.querySelectorAll(itemLabelSelector)) {
-        itemLabelCount += 1;
-        const text = normalizedText(label);
-        if (text) entries.add(text);
-      }
+      itemLabelCount = collectLabels(scrollableList, entries);
       return itemLabelCount;
     };
 
@@ -889,6 +933,64 @@
     collect();
     return [...entries];
   };
+  const readChatPaletteEntries = (root) =>
+    scanScrollableList(root, (scrollableList, entries) => {
+      let count = 0;
+      for (const label of scrollableList.querySelectorAll('.MuiListItemButton-root[role="button"] .MuiListItemText-primary')) {
+        count += 1;
+        const text = normalizedText(label);
+        if (text) entries.add(text);
+      }
+      return count;
+    });
+
+  // シーン一覧の読み取り。シーンパネルもチャットパレットと同じ .MuiDialogContent-root.scrollable-list を
+  // 使うため、走査ロジックを流用します。カード（.MuiCard-root）内の最初の見出し
+  // （.MuiTypography-caption）がシーン名で、その次がBGMファイル名です。
+  const readSceneEntries = async (root) =>
+    scanScrollableList(root, (scrollableList, entries) => {
+      let count = 0;
+      for (const card of scrollableList.querySelectorAll('.MuiCard-root')) {
+        count += 1;
+        const caption = card.querySelector('.MuiTypography-caption');
+        const text = normalizedText(caption);
+        if (text) entries.add(text);
+      }
+      return count;
+    });
+
+  const openSceneListPanel = async () => withChatDrawer(async () => {
+    const icon = [...document.querySelectorAll('svg[data-testid="OndemandVideoIcon"]')].find(visible);
+    const button = icon?.closest('button');
+    if (!button) throw new Error('CCFOLIAのシーン（映像アイコン）ボタンが見つかりません。');
+
+    button.click();
+    // シーンパネルのヘッダー文言に依存しないよう、scrollable-list を含む最も小さな可視ダイアログを拾います。
+    // MuiCard-root も MuiPaper の仲間なので、誤ってカード本体などを拾わないよう除外します。
+    const root = await waitFor(() => [...document.querySelectorAll('[role="dialog"], .MuiDialog-root, .MuiModal-root, [role="presentation"], .MuiPaper-root')]
+      .filter(visible)
+      .filter((element) => !element.matches('.MuiCard-root'))
+      .filter((element) => element.querySelector('.MuiDialogContent-root.scrollable-list'))
+      .sort((left, right) => left.querySelectorAll('*').length - right.querySelectorAll('*').length)[0] ?? null, 3000);
+    if (!root) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      throw new Error('CCFOLIAのシーン一覧を読み取れませんでした。');
+    }
+
+    try {
+      const entries = await readSceneEntries(root);
+      return { ok: true, entries };
+    } finally {
+      // シーンパネルは閉じる処理が効かずCCFOLIAの画面に残ることがあるため、
+      // キャラクター選択メニューと同じように、パネルの外側（バックドロップや無関係な場所）を
+      // クリックして閉じます。それでも残る場合はEscapeも送ります。
+      await clickAwayFromMenus();
+      if (root.isConnected && visible(root)) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      }
+      await wait(80);
+    }
+  }, { forceOpen: true, closeAfter: true });
   const openChatPalette = async () => withChatDrawer(async () => {
     const icon = [...document.querySelectorAll('svg[data-testid="ListAltIcon"]')].find(visible);
     const button = icon?.closest('button');
@@ -1216,7 +1318,8 @@
       CCFOLIA_CHAT_SET_SPEAKER_IN_ROOM: setChatSpeaker,
       CCFOLIA_CHAT_SELECT_CHARACTER_IN_ROOM: selectChatCharacter,
       CCFOLIA_CHAT_DICE_IN_ROOM: clickDiceShortcut,
-      CCFOLIA_CHAT_PALETTE_IN_ROOM: openChatPalette
+      CCFOLIA_CHAT_PALETTE_IN_ROOM: openChatPalette,
+      CCFOLIA_SCENE_LIST_IN_ROOM: openSceneListPanel
     };
     const action = actions[message?.type];
     if (!action) return undefined;
