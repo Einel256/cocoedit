@@ -183,8 +183,7 @@ input, select, textarea { min-width: 0; padding: 6px 9px; color: var(--text); bo
 #auto-delete-toggle { min-height: 29px; padding: 4px 12px; border-radius: 999px; }
 #auto-delete-toggle[aria-pressed="true"] { border-color: rgb(230 0 79 / .55); background: rgb(230 0 79 / .28); }
 .skip-automation #skip-status { flex: 1 0 100%; margin: 0; color: #9aa1ad; font-size: 11px; }
-.acquire-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0 10px; }
-.acquire-buttons button { width: 100%; min-height: 34px; }
+#acquire-all { width: calc(100% - 20px); min-height: 34px; margin: 0 10px; }
 #characters { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; max-height: 180px; overflow: auto; margin: 8px 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); scrollbar-width: thin; scrollbar-color: #454c5c transparent; }
 .character-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 .character-name { min-width: 0; overflow-wrap: anywhere; color: #e0e3ea; }
@@ -193,9 +192,9 @@ output { display: block; min-height: 18px; color: #d7dbe2; }
 #status { margin: 0 10px 6px; }
 small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 11px; }
 
-/* チャット */
-.chat-section { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; gap: 6px; padding: 4px 10px 10px; }
-#chat-log { flex: 1 1 auto; min-height: 140px; overflow: auto; margin: 0; padding: 0; list-style: none; scrollbar-width: thin; scrollbar-color: #454c5c transparent; }
+/* チャット（上: ログ、下: 入力欄の並び） */
+.chat-section { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; gap: 6px; padding: 4px 10px 10px; position: relative; }
+#chat-log { flex: 1 1 auto; min-height: 110px; overflow: auto; margin: 0; padding: 0; list-style: none; scrollbar-width: thin; scrollbar-color: #454c5c transparent; }
 .chat-message { display: flex; align-items: flex-start; gap: 10px; padding: 10px 4px; border-bottom: 1px solid rgb(255 255 255 / .05); }
 .message-avatar, .message-avatar-placeholder { flex: 0 0 36px; width: 36px; height: 36px; border-radius: 6px; object-fit: cover; background: rgb(52 57 70); }
 .message-content { flex: 1; min-width: 0; }
@@ -218,32 +217,45 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 #open-chat-palette svg { width: 18px; height: 18px; fill: currentColor; }
 #open-chat-palette:hover:not(:disabled) { color: #fff; background: rgb(255 255 255 / .1); }
 
-/* 技能値パレット */
-.chat-palette-panel { display: flex; flex: 0 1 auto; flex-direction: column; max-height: min(38vh, 240px); min-height: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
-.chat-palette-toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 7px 8px; }
+/* 技能値パレット（開いている間、上の領域いっぱいまで広がるオーバーレイで表示します。下端はダイス行の上） */
+.chat-palette-panel {
+  position: absolute;
+  top: 4px;
+  left: 0;
+  right: 0;
+  bottom: 140px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 6px 18px rgba(0,0,0,.45);
+  overflow: hidden;
+}
+.chat-palette-toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
 .chat-palette-toolbar strong { flex: 0 0 auto; font-size: 12px; font-weight: 500; }
-#chat-palette-search { flex: 1 1 auto; width: 80px; padding: 5px 8px; }
 #close-chat-palette { flex: 0 0 auto; padding: 5px 9px; }
-.chat-palette-items { display: flex; flex-direction: column; gap: 3px; min-height: 0; overflow: auto; margin: 0; padding: 0 8px 8px; list-style: none; scrollbar-width: thin; scrollbar-color: #454c5c transparent; }
-.chat-palette-items button { overflow: hidden; width: 100%; padding: 7px 10px; text-align: left; text-overflow: ellipsis; white-space: nowrap; border-radius: 6px; }
-#chat-palette-status { flex: 0 0 auto; min-height: 16px; margin: 0; padding: 2px 9px 6px; color: #8a91a0; font-size: 11px; }
+.chat-palette-items { display: flex; flex: 1 1 auto; flex-direction: column; gap: 3px; min-height: 0; overflow: auto; margin: 0; padding: 6px 10px; list-style: none; scrollbar-width: thin; scrollbar-color: #454c5c transparent; }
+.chat-palette-items button { overflow: hidden; width: 100%; padding: 8px 10px; text-align: left; text-overflow: ellipsis; white-space: nowrap; border-radius: 6px; font-size: 13.5px; }
+#chat-palette-status { flex: 0 0 auto; min-height: 16px; margin: 0; padding: 4px 10px 6px; color: #8a91a0; font-size: 11px; border-top: 1px solid var(--line); }
 
-/* ダイス */
-.dice-shortcuts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; padding: 2px 1px; }
-.dice-shortcuts button { min-width: 30px; min-height: 30px; padding: 4px 6px; border: 1px solid rgb(255 255 255 / .16); border-radius: 999px; background: rgb(38 42 53); color: #e8eaf0; font-size: 12.5px; }
+/* ダイス（横一列のコンパクトな並び） */
+.dice-shortcuts { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 4px; padding: 2px 0; }
+.dice-shortcuts button { min-width: 0; min-height: 24px; padding: 2px 0; border: 1px solid rgb(255 255 255 / .16); border-radius: 999px; background: rgb(38 42 53); color: #e8eaf0; font-size: 11.5px; }
 .dice-shortcuts button:hover:not(:disabled) { border-color: rgb(255 255 255 / .3); background: rgb(52 57 70); }
 
 /* 入力欄（CCFOLIA本家風のフラットなメッセージボックス） */
-.message-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-rows: minmax(84px, 1fr) auto; align-items: end; gap: 6px; position: relative; }
+.message-composer { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-rows: minmax(84px, 1fr) auto; align-items: end; gap: 6px; position: relative; }
 
-/* 技能候補ドロップダウン */
+/* 技能候補・コマンド候補ドロップダウン（入力欄の上に、大きく開きます） */
 .skill-suggestions {
   position: absolute;
-  top: 100%;
+  bottom: calc(100% + 2px);
   left: 0;
   right: 0;
   z-index: 10;
-  max-height: 200px;
+  max-height: min(70vh, 560px);
   overflow-y: auto;
   border: 1px solid rgb(255 255 255 / .14);
   border-radius: 8px;
@@ -254,19 +266,21 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 .skill-suggestion-item {
   display: block;
   width: 100%;
-  padding: 6px 10px;
+  padding: 7px 10px;
   text-align: left;
   color: var(--text);
   background: transparent;
   border: none;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 13.5px;
 }
+.skill-suggestion-item.is-highlighted { background: rgb(255 255 255 / .1); }
 .skill-suggestion-item:hover, .skill-suggestion-item:focus-visible {
   background: rgb(255 255 255 / .1);
   outline: 2px solid rgb(255 255 255 / .35);
   outline-offset: -1px;
 }
+.suggestion-empty { display: block; padding: 6px 10px; color: var(--muted); font-size: 12px; cursor: default; }
 #chat-input { grid-column: 1 / -1; grid-row: 1; width: 100%; min-height: 84px; padding: 9px 11px; resize: vertical; border: none; border-radius: 8px; background: rgb(255 255 255 / .04); font-size: 13.5px; line-height: 1.5; }
 #chat-input:focus-visible { outline: none; background: rgb(255 255 255 / .06); }
 #clear-message, #send-message { grid-row: 2; min-height: 28px; padding: 4px 12px; border: none; border-radius: 6px; background: transparent; color: var(--muted); font-weight: 500; font-size: 12.5px; }

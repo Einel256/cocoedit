@@ -511,8 +511,48 @@
     return { selector, options, opened };
   };
 
+  // MUIのメニュー（キャラクター選択など）を、メニュー外の場所をクリックして閉じます。
+  // 開閉ボタンを再度押すと、タイミングによってメニューを開き直ってしまうことがあるため。
+  const clickAwayFromMenus = async () => {
+    // MUIのオーバーレイ用バックドロップがあれば、そこをクリックするのが確実です。
+    const backdrops = [...document.querySelectorAll('.MuiBackdrop-root, [data-testid*="backdrop" i]')].filter(visible);
+    if (backdrops.length > 0) {
+      backdrops[backdrops.length - 1].click();
+      await wait(280);
+      return;
+    }
+    const dialogs = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .MuiDrawer-root')].filter(visible);
+    const dialogRect = dialogs.at(-1)?.getBoundingClientRect();
+    const points = [
+      [window.innerWidth - 24, window.innerHeight - 24],
+      [window.innerWidth - 24, 24],
+      [24, window.innerHeight - 24],
+      [24, 24],
+      [window.innerWidth / 2, window.innerHeight - 24],
+      [window.innerWidth - 24, window.innerHeight / 2]
+    ];
+    for (const [x, y] of points) {
+      if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) continue;
+      if (dialogRect && x >= dialogRect.left && x <= dialogRect.right && y >= dialogRect.top && y <= dialogRect.bottom) continue;
+      const element = document.elementFromPoint(x, y);
+      if (!element || element.closest('button, input, textarea, select, a, [role="button"]')) continue;
+      element.dispatchEvent(new MouseEvent('click', {
+        bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+      }));
+      await wait(280);
+      return;
+    }
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    await wait(280);
+  };
+
   const closeCharacterPicker = async (selector, opened = true) => {
-    if (opened && selector?.isConnected) selector.click();
+    // 開いたキャラクター選択メニューは、選択ボタンを再度押す代わりに
+    // CCFOLIA内の無関係な場所をクリックして閉じます。
+    if (opened) {
+      await clickAwayFromMenus();
+      return;
+    }
     await wait(60);
   };
 
@@ -522,11 +562,22 @@
     const state = await withChatDrawer(async () => {
     const tabs = [...document.querySelectorAll('[role="tablist"] button')]
       .filter((button) => button.isConnected)
-      .map((button, index) => ({
-        index,
-        name: normalizedText(button),
-        selected: button.getAttribute('aria-selected') === 'true' || button.classList.contains('Mui-selected')
-      }))
+      .map((button, index) => {
+        // タブ名に数字だけのバッジ（未読数・順番表示など）が付いている場合は除いて読み取ります。
+        // 例: 「メイン0」のように末尾に付くインデックス表示を「メイン」に戻します。
+        const clone = button.cloneNode(true);
+        for (const node of [...clone.childNodes]) {
+          if (node.nodeType === Node.TEXT_NODE && /^\d+$/.test(node.textContent?.trim() ?? '')) node.remove();
+        }
+        for (const element of [...clone.querySelectorAll('*')]) {
+          if (element.children.length === 0 && /^\d+$/.test(normalizedText(element))) element.remove();
+        }
+        return {
+          index,
+          name: normalizedText(clone),
+          selected: button.getAttribute('aria-selected') === 'true' || button.classList.contains('Mui-selected')
+        };
+      })
       .filter((tab) => tab.name);
     const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
     const messages = logList
@@ -610,15 +661,16 @@
     setReactInputValue(textarea, messageText);
     sendButton.click();
     // Wait for CCFOLIA's React submit handler to clear the draft before the
-    // control window immediately reads the updated room log.
-    await waitFor(() => textarea.isConnected && textarea.value === '', 1500);
+    // control window immediately reads the updated room log. Timeout is kept
+    // short so the send flow does not block the control window for long.
+    await waitFor(() => textarea.isConnected && textarea.value === '', 800);
     if (!parseChatCommands(messageText)) {
       const expectedText = messageText.replace(/\s+/g, ' ').trim();
       await waitFor(() => {
         const entries = [...document.querySelectorAll('ul[aria-label="ルームチャット"][role="log"] [data-index]')];
         const latest = entries.at(-1);
         return latest && normalizedText(latest).includes(expectedText);
-      }, 1800);
+      }, 1200);
     } else {
       await wait(100);
     }

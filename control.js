@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const acquireButton = document.getElementById('acquire');
+  const acquireAllButton = document.getElementById('acquire-all');
   const charactersElement = document.getElementById('characters');
   const status = document.getElementById('status');
   const chatStatus = document.getElementById('chat-status');
@@ -15,7 +15,6 @@
   const speakerAvatar = document.getElementById('speaker-avatar');
   const characterChoice = document.getElementById('character-choice');
   const chatPalettePanel = document.getElementById('chat-palette-panel');
-  const chatPaletteSearch = document.getElementById('chat-palette-search');
   const chatPaletteItems = document.getElementById('chat-palette-items');
   const chatPaletteStatus = document.getElementById('chat-palette-status');
   const refreshChatPaletteButton = document.getElementById('refresh-chat-palette');
@@ -213,6 +212,90 @@
     if (autoDeleteEnabled) void applyAutoDeleteMode();
   });
 
+  // CCBなどのロール結果（…ここから　 (1D100<=68) ＞ 57 ＞ 成功　ここまで…）を色付けします。
+  const ROLL_SUCCESS_COLOR = '#2089dc';
+  const ROLL_FAILURE_COLOR = '#d1004a';
+  // innerTextに紛れない zero-width 文字を除去します所在（あると正規表現が一致しません）。
+  const stripInvisibleChars = (text) => (text ?? '').replace(/[\u200b\u200c\u200d\u2060]/g, '');
+  // (1D100<=70) ＞ 20 ＞ 成功 を検出します。数値の表記揺れ（[20]、改行、20 / 100 など）を
+  // 許容しつつ、技能名や会話文中の「成功」「失敗」には反応しません。
+  const rollFormulaPattern = /\(\s*\d+D\d+[^)\n]*\)/;
+  const rollKeywordPattern = /(ファンブル|失敗|成功)/;
+  const rollResultColor = (segment) => {
+    const formula = segment.match(rollFormulaPattern);
+    if (!formula) return null;
+    const regionStart = formula.index + formula[0].length;
+    const region = segment.slice(regionStart, regionStart + 60);
+    const separator = region.search(/[＞>]/);
+    if (separator < 0) return null;
+    const keyword = region.slice(separator + 1).match(rollKeywordPattern);
+    if (!keyword) return null;
+    return keyword[1] === '成功' ? ROLL_SUCCESS_COLOR : ROLL_FAILURE_COLOR;
+  };
+  const appendRollResultSpan = (container, text, color) => {
+    const span = document.createElement('span');
+    span.textContent = text;
+    span.style.color = color;
+    container.append(span);
+  };
+  // 「ここから…ここまで」に囲まれていない行でも、ダイス判定の出力部分を色付けします。
+  const appendDiceResultText = (container, value) => {
+    const formulaRegex = new RegExp(rollFormulaPattern.source, 'g');
+    formulaRegex.lastIndex = 0;
+    let cursor = 0;
+    let formulaMatch;
+    while ((formulaMatch = formulaRegex.exec(value)) !== null) {
+      if (formulaMatch.index > cursor) container.append(value.slice(cursor, formulaMatch.index));
+      const regionStart = formulaMatch.index + formulaMatch[0].length;
+      const region = value.slice(regionStart, regionStart + 60);
+      const separator = region.search(/[＞>]/);
+      const keyword = separator < 0 ? null : region.slice(separator + 1).match(rollKeywordPattern);
+      if (!keyword) {
+        // 判定結果のないロール（ダメージ計算など）は通常色のまま出力します。
+        container.append(formulaMatch[0]);
+        cursor = formulaRegex.lastIndex;
+        continue;
+      }
+      const end = regionStart + separator + 1 + keyword.index + keyword[1].length;
+      appendRollResultSpan(container, value.slice(formulaMatch.index, end), keyword[1] === '成功' ? ROLL_SUCCESS_COLOR : ROLL_FAILURE_COLOR);
+      cursor = end;
+      formulaRegex.lastIndex = end;
+    }
+    if (cursor < value.length) container.append(value.slice(cursor));
+  };
+  const appendMessageText = (container, text) => {
+    const value = stripInvisibleChars(text);
+    if (!/(ここから|ここまで)/.test(value)) {
+      appendDiceResultText(container, value);
+      return;
+    }
+    // 「ここから」〜「ここまで」で囲まれた範囲全体を判定結果に応じて色付けします。
+    const parts = value.split(/(ここから|ここまで)/);
+    let buffer = '';
+    let inSegment = false;
+    const flushBuffer = (withinSegment) => {
+      if (!buffer) return;
+      const color = withinSegment ? rollResultColor(buffer) : null;
+      if (color) appendRollResultSpan(container, buffer, color);
+      else container.append(buffer);
+      buffer = '';
+    };
+    for (const part of parts) {
+      if (part === 'ここから') {
+        flushBuffer(false);
+        buffer = part;
+        inSegment = true;
+      } else if (part === 'ここまで') {
+        buffer += part;
+        flushBuffer(inSegment);
+        inSegment = false;
+      } else {
+        buffer += part;
+      }
+    }
+    flushBuffer(inSegment);
+  };
+
   const renderChatState = (chatState) => {
     latestChatState = chatState;
     const avatarBySpeaker = new Map();
@@ -272,7 +355,7 @@
       date.textContent = message.date || '';
       header.append(speaker, date);
       const text = document.createElement('p');
-      text.textContent = message.text ?? (typeof message === 'string' ? message : '');
+      appendMessageText(text, message.text ?? (typeof message === 'string' ? message : ''));
       content.append(header, text);
       item.append(content);
       chatLog.append(item);
@@ -282,7 +365,10 @@
     speakerAvatar.src = chatState.speakerAvatar ?? '';
     speakerAvatar.hidden = !chatState.speakerAvatar;
     const currentCharacter = characterChoice.value;
-    characterChoice.replaceChildren(new Option('選択なし', ''));
+    // キャラクター選択プルダウン。選択肢はキャラクターのみで（選択なし・状態表記なし）。
+    // CCFOLIA側の現在の発言者にプルダウンを追従させます。
+    characterChoice.replaceChildren();
+    let matchedOption = null;
     for (const character of chatState.characters ?? []) {
       const name = character.name || `キャラクター${character.index + 1}`;
       const value = character.key || String(character.index);
@@ -290,13 +376,13 @@
       option.dataset.state = character.state || '';
       option.dataset.characterName = character.name || '';
       option.dataset.characterKey = character.key || '';
-      if (character.state) option.textContent = `${name} (${character.state})`;
       characterChoice.append(option);
+      if (character.name && character.name === chatState.speakerName) matchedOption = option;
     }
-    if ([...characterChoice.options].some((option) => option.value === currentCharacter)) {
+    if (matchedOption) {
+      characterChoice.value = matchedOption.value;
+    } else if ([...characterChoice.options].some((option) => option.value === currentCharacter)) {
       characterChoice.value = currentCharacter;
-    } else if ([...characterChoice.options].some((option) => option.dataset.characterName === chatState.speakerName)) {
-      characterChoice.value = [...characterChoice.options].find((option) => option.dataset.characterName === chatState.speakerName)?.value ?? '';
     }
 
   };
@@ -402,11 +488,153 @@
     suggestionHighlightIndex = -1;
   };
 
+  /* /m /g /c コマンド。fzf風のTab補完で選択します。
+     /m = チャットタブ移動 /g = 技能選択（チャットパレット） /c = キャラ選択 */
+  const commandSuggestions = document.getElementById('command-suggestions');
+  let commandMode = null; // 'm' | 'g' | 'c'
+  let commandMatches = [];
+  let commandIndex = 0;
+  let commandQuery = null;
+  // 「/m」「/g」「/c」の入力をコマンドとして扱います（半角スペースは任意）。
+  const parseCommandInput = (value) => {
+    const match = value.match(/^\/([mgc])(.*)$/);
+    if (!match) return null;
+    return { mode: match[1], query: match[2].replace(/^\s+/, '') };
+  };
+
+  const commandCandidates = (mode) => {
+    if (mode === 'm') {
+      return (latestChatState?.tabs ?? []).map((tab) => ({ label: tab.name, tab }));
+    }
+    if (mode === 'g') {
+      return chatPaletteEntries.map((entry) => ({ label: entry, value: entry }));
+    }
+    return (latestChatState?.characters ?? [])
+      .map((character) => ({
+        label: character.name || `キャラクター${character.index + 1}`,
+        name: character.name,
+        key: character.key
+      }))
+      // 現在の送行者（発言名欄のキャラクター）を常に先頭に並べます。
+      .sort((left, right) => {
+        const speakerName = latestChatState?.speakerName ?? '';
+        const isSpeaker = (candidate) => Boolean(speakerName && candidate.name === speakerName);
+        return Number(isSpeaker(right)) - Number(isSpeaker(left));
+      });
+  };
+
+  const commandEmptyMessage = (mode) => {
+    if (mode === 'm') return '一致するチャットタブがありません。';
+    if (mode === 'g') return '一致する技能がありません。「一括取得」やパレットの「再取得」で取得してください。';
+    return 'キャラクター候補がありません。「更新」または「一括取得」で候補を取得してください。';
+  };
+
+  const hideCommandSuggestions = () => {
+    hideSkillSuggestions(); // ensure separate dropdowns do not stay visible
+    if (!commandSuggestions) return;
+    commandSuggestions.hidden = true;
+    commandSuggestions.replaceChildren();
+    commandMatches = [];
+    commandIndex = 0;
+    commandQuery = null;
+    commandMode = null;
+  };
+
+  // 表示した場合はtrue、コマンド以外の入力ならfalseを返します（技能候補との居住分け用）。
+  const matchesCommandQuery = (label, query) => query.split(/\s+/).filter(Boolean)
+    .every((word) => label.toLocaleLowerCase().includes(word.toLocaleLowerCase()));
+  const renderCommandSuggestions = () => {
+    if (!commandSuggestions) return false;
+    const parsed = parseCommandInput(chatInput.value);
+    if (!parsed) {
+      hideCommandSuggestions();
+      return false;
+    }
+    // モード・絞り込み語が変わったらハイライトを先頭へ戻します。
+    if (parsed.mode !== commandMode || parsed.query !== commandQuery) commandIndex = 0;
+    commandMode = parsed.mode;
+    commandQuery = parsed.query;
+    // 絞り込みはスペース区切りの複数語のAND一致（fzf風）です。
+    commandMatches = commandCandidates(commandMode)
+      .filter((candidate) => matchesCommandQuery(candidate.label, parsed.query));
+    commandSuggestions.replaceChildren();
+    if (!commandMatches.length) {
+      const empty = document.createElement('span');
+      empty.className = 'suggestion-empty';
+      empty.textContent = commandEmptyMessage(commandMode);
+      commandSuggestions.append(empty);
+      commandIndex = -1;
+    } else {
+      if (commandIndex >= commandMatches.length) commandIndex = 0;
+      commandMatches.forEach((candidate, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'skill-suggestion-item';
+        button.classList.toggle('is-highlighted', index === commandIndex);
+        button.textContent = candidate.label;
+        button.title = candidate.label;
+        button.addEventListener('click', () => {
+          commandIndex = index;
+          void executeCommand();
+        });
+        commandSuggestions.append(button);
+      });
+    }
+    commandSuggestions.hidden = false;
+    // 技能候補はコマンド入力中は表示しません。
+    hideSkillSuggestions();
+    return true;
+  };
+
+  // Tab押下。fzfのように選択を順送りします。
+  // 入力欄の内容は書き換えません（検索語を壊さないため）。候補の反映はEnterで行います。
+  const moveCommandSelection = (direction = 1) => {
+    const count = commandMatches.length;
+    if (!count) return;
+    if (commandIndex < 0) commandIndex = 0;
+    else commandIndex = ((commandIndex + direction) % count + count) % count;
+    renderCommandSuggestions();
+  };
+
+  const executeCommand = async () => {
+    const count = commandMatches.length;
+    if (!count || commandIndex < 0 || commandIndex >= count) {
+      chatStatus.textContent = commandEmptyMessage(commandMode ?? 'm');
+      chatInput.value = '';
+      hideCommandSuggestions();
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    const selected = commandMatches[commandIndex];
+    if (commandMode === 'g') {
+      // 技能を選択したら、そのテキストを入力欄に置きます（送信はしません）。
+      chatInput.value = selected.value;
+      hideCommandSuggestions();
+      chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length;
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      chatInput.focus();
+      return;
+    }
+    try {
+      if (commandMode === 'm') {
+        await sendRequest('CCFOLIA_CHAT_SELECT_TAB', { index: selected.tab.index });
+        chatStatus.textContent = `チャットタブを「${selected.label}」に切り替えました。`;
+      } else {
+        await sendRequest('CCFOLIA_CHAT_SELECT_CHARACTER', { name: selected.name, key: selected.key });
+        chatStatus.textContent = `キャラクターを「${selected.label}」に切り替えました。`;
+      }
+      chatInput.value = '';
+      hideCommandSuggestions();
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await refreshChatState({ force: true, includeCharacters: commandMode === 'c' });
+    } catch (reason) {
+      chatStatus.textContent = reason.message;
+    }
+  };
+
   const renderChatPalette = () => {
-    const query = chatPaletteSearch.value.trim().toLocaleLowerCase();
-    const filteredEntries = chatPaletteEntries.filter((entry) => entry.toLocaleLowerCase().includes(query));
     chatPaletteItems.replaceChildren();
-    for (const entry of filteredEntries) {
+    for (const entry of chatPaletteEntries) {
       const item = document.createElement('li');
       const button = document.createElement('button');
       button.type = 'button';
@@ -419,9 +647,9 @@
       item.append(button);
       chatPaletteItems.append(item);
     }
-    chatPaletteStatus.textContent = filteredEntries.length
-      ? `${filteredEntries.length}件`
-      : chatPaletteEntries.length ? '一致する項目がありません。' : 'パレットの項目がありません。';
+    chatPaletteStatus.textContent = chatPaletteEntries.length
+      ? `${chatPaletteEntries.length}件`
+      : 'パレットの項目がありません。';
   };
 
   const refreshChatState = async ({ force = true, includeCharacters = false } = {}) => {
@@ -448,29 +676,9 @@
     renderCharacterChoices();
   };
 
-  const acquireCharactersAction = async () => {
-    acquireButton.disabled = true;
-    status.textContent = 'キャラクター情報を取得しています…';
-    try {
-      const result = await chrome.runtime.sendMessage({ type: 'CCFOLIA_ACQUIRE_CHARACTERS' });
-      if (!result?.ok) throw new Error(result?.error || 'キャラクター情報を取得できませんでした。');
-      storeAcquiredCharacters(result.characters);
-      status.textContent = `${acquiredCharacters.length}人のキャラクター情報を取得しました。`;
-    } catch (reason) {
-      console.error('[CCFOLIA ステータス変更]', reason);
-      status.textContent = reason instanceof Error ? reason.message : String(reason);
-    } finally {
-      acquireButton.disabled = false;
-    }
-  };
-
-  acquireButton.addEventListener('click', () => void acquireCharactersAction());
-
   // キャラ情報・チャットパレット・チャットログを一括で取得します。
-  const acquireAllButton = document.getElementById('acquire-all');
   acquireAllButton.addEventListener('click', async () => {
     acquireAllButton.disabled = true;
-    acquireButton.disabled = true;
     openChatPaletteButton.disabled = true;
     refreshChatPaletteButton.disabled = true;
     try {
@@ -478,7 +686,7 @@
       const result = await chrome.runtime.sendMessage({ type: 'CCFOLIA_ACQUIRE_CHARACTERS' });
       if (!result?.ok) throw new Error(result?.error || 'キャラクター情報を取得できませんでした。');
       storeAcquiredCharacters(result.characters);
-      let characterCount = acquiredCharacters.length;
+      const characterCount = acquiredCharacters.length;
       let paletteCount = null;
       chatPalettePanel.hidden = false;
       chatPaletteItems.replaceChildren();
@@ -486,7 +694,6 @@
       try {
         await fetchChatPaletteEntries();
         paletteCount = chatPaletteEntries.length;
-        chatPaletteSearch.value = '';
         renderChatPalette();
       } catch (reason) {
         console.error('[CCFOLIA ステータス変更]', reason);
@@ -500,7 +707,6 @@
       status.textContent = reason instanceof Error ? reason.message : String(reason);
     } finally {
       acquireAllButton.disabled = false;
-      acquireButton.disabled = false;
       openChatPaletteButton.disabled = false;
       refreshChatPaletteButton.disabled = false;
     }
@@ -545,9 +751,7 @@
     chatPaletteItems.replaceChildren();
     try {
       await fetchChatPaletteEntries();
-      chatPaletteSearch.value = '';
       renderChatPalette();
-      chatPaletteSearch.focus();
     } catch (reason) {
       chatStatus.textContent = reason.message;
       chatPalettePanel.hidden = true;
@@ -563,46 +767,76 @@
       void refetchChatPalette();
       return;
     }
-    chatPaletteSearch.value = '';
     renderChatPalette();
     chatPalettePanel.hidden = false;
-    chatPaletteSearch.focus();
   });
   refreshChatPaletteButton.addEventListener('click', () => void refetchChatPalette());
   closeChatPaletteButton.addEventListener('click', () => {
     chatPalettePanel.hidden = true;
   });
-  chatPaletteSearch.addEventListener('input', renderChatPalette);
   clearMessageButton.addEventListener('click', () => {
     chatInput.value = '';
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     chatInput.focus();
   });
   sendButton.addEventListener('click', async () => {
-    if (!chatInput.value.trim()) return;
+    const originalText = chatInput.value;
+    if (!originalText.trim()) return;
+    // CCFOLIA側の送信処理を待たず、入力欄を即座にクリアします（失敗時は元の内容に戻します）。
+    chatInput.value = '';
+    chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     sendButton.disabled = true;
     try {
       const selectedTab = chatTabs.value;
       await sendRequest('CCFOLIA_CHAT_SEND', {
-        text: chatInput.value,
+        text: originalText,
         ...(selectedTab !== '' ? { tabIndex: Number(selectedTab) } : {})
       });
-      chatInput.value = '';
       await refreshChatState();
     } catch (reason) {
       chatStatus.textContent = reason.message;
+      chatInput.value = originalText;
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     } finally {
       sendButton.disabled = false;
       chatInput.focus();
     }
   });
   chatInput.addEventListener('input', () => {
-    showSkillSuggestions(chatInput.value);
+    if (!renderCommandSuggestions()) showSkillSuggestions(chatInput.value);
   });
 
   chatInput.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    if (event.isComposing || event.keyCode === 229) return;
+    const commandActive = Boolean(!commandSuggestions?.hidden && commandMatches.length);
+    // Tab補完（fzf風）。Tabで下へ、Shift+Tabで上へ選択を移動します（入力欄は書き換えません）。
+    if (event.key === 'Tab' && commandActive) {
+      event.preventDefault();
+      moveCommandSelection(event.shiftKey ? -1 : 1);
+      return;
+    }
+    // 上下キーでもハイライトを移動します。
+    if (commandActive && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      event.preventDefault();
+      const count = commandMatches.length;
+      commandIndex = ((commandIndex + (event.key === 'ArrowDown' ? 1 : -1)) % count + count) % count;
+      renderCommandSuggestions();
+      return;
+    }
+    // Escで候補を閉じます。
+    if (commandActive && event.key === 'Escape') {
+      event.preventDefault();
+      hideCommandSuggestions();
+      return;
+    }
+    if (event.key !== 'Enter' || event.shiftKey) return;
     event.preventDefault();
+    // コマンド入力中（/m /g /c）は候補の実行を優先し、通常のメッセージ送信は行いません。
+    if (parseCommandInput(chatInput.value)) {
+      renderCommandSuggestions();
+      void executeCommand();
+      return;
+    }
     sendButton.click();
   });
   characterChoice.addEventListener('change', async () => {
