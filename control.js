@@ -18,10 +18,10 @@
   const chatPaletteSearch = document.getElementById('chat-palette-search');
   const chatPaletteItems = document.getElementById('chat-palette-items');
   const chatPaletteStatus = document.getElementById('chat-palette-status');
+  const refreshChatPaletteButton = document.getElementById('refresh-chat-palette');
   const closeChatPaletteButton = document.getElementById('close-chat-palette');
   const skillSuggestions = document.getElementById('skill-suggestions');
   const diceShortcuts = document.getElementById('dice-shortcuts');
-  const diceCount = document.getElementById('dice-count');
   const autoDeleteToggle = document.getElementById('auto-delete-toggle');
   const autoSkipInterval = document.getElementById('auto-skip-interval');
   const skipStatus = document.getElementById('skip-status');
@@ -30,6 +30,7 @@
   const themeSelect = document.getElementById('theme-select');
   const THEME_STORAGE_KEY = 'ccfolia-theme-v1';
   const CHARACTER_STORAGE_KEY = 'ccfolia-status-characters-v1';
+  const PALETTE_STORAGE_KEY = 'ccfolia-chat-palette-v1';
   settingsToggle?.addEventListener('click', () => {
     if (!setupSection) return;
     setupSection.open = !setupSection.open;
@@ -61,8 +62,19 @@
 
   let acquiredCharacters = readStoredCharacters();
   let latestChatState = null;
-  let chatPaletteEntries = [];
-  let selectedDiceCount = 1;
+  // チャットパレットの取得結果を保存し、開くたびにCCFOLIA側を走査しなくて済むようにします。
+  const readStoredPalette = () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(PALETTE_STORAGE_KEY) || 'null');
+      return Array.isArray(stored) ? stored.filter((entry) => typeof entry === 'string') : null;
+    } catch {
+      return null;
+    }
+  };
+  let chatPaletteEntries = readStoredPalette() ?? [];
+  const savePaletteEntries = () => {
+    localStorage.setItem(PALETTE_STORAGE_KEY, JSON.stringify(chatPaletteEntries));
+  };
 
   const syncCommandMap = () => {
     const commandMap = Object.fromEntries((acquiredCharacters ?? [])
@@ -289,16 +301,42 @@
 
   };
 
+  // ダイスショートカット。同じボタンを連続クリックした回数で個数を決めます。
+  // 1回目で 1d6 を挿入し、続けて押すと挿入済みの式を 2d6、3d6 …へ差し替えます。
+  // 別のダイスボタンを押すと連続カウントはリセットされます。
+  const diceLastInsert = new Map();
+  const insertDiceFormula = (sides) => {
+    for (const key of [...diceLastInsert.keys()]) {
+      if (key !== sides) diceLastInsert.delete(key);
+    }
+    let start = chatInput.selectionStart ?? chatInput.value.length;
+    let end = chatInput.selectionEnd ?? start;
+    let count = 1;
+    const previous = diceLastInsert.get(sides);
+    const previousFormula = previous ? `${previous.count}d${sides}` : null;
+    if (previous && previousFormula
+      && previous.start >= 0 && previous.end <= chatInput.value.length
+      && chatInput.value.slice(previous.start, previous.end) === previousFormula) {
+      count = previous.count + 1;
+      start = previous.start;
+      end = previous.end;
+    }
+    const formula = `${count}d${sides}`;
+    chatInput.setRangeText(formula, start, end, 'end');
+    diceLastInsert.set(sides, { start, end: start + formula.length, count });
+    chatInput.focus();
+    chatInput.selectionStart = chatInput.selectionEnd = start + formula.length;
+    chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+
   const renderDiceControls = () => {
     diceShortcuts.replaceChildren();
-    diceCount.replaceChildren();
     for (const sides of [2, 3, 4, 6, 8, 10, 12, 20, 100]) {
-      const formula = `${selectedDiceCount}d${sides}`;
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = `d${sides}`;
-      button.setAttribute('aria-label', `${formula}を入力`);
-      button.addEventListener('click', () => insertChatInputText(formula));
+      button.setAttribute('aria-label', `d${sides}を入力（連続クリックで個数を指定）`);
+      button.addEventListener('click', () => insertDiceFormula(sides));
       diceShortcuts.append(button);
     }
     const sanButton = document.createElement('button');
@@ -307,19 +345,6 @@
     sanButton.setAttribute('aria-label', '正気度ロールを入力');
     sanButton.addEventListener('click', () => insertChatInputText('1d100<={SAN} 【正気度ロール】'));
     diceShortcuts.append(sanButton);
-    for (let count = 1; count <= 4; count += 1) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = String(count);
-      button.setAttribute('role', 'tab');
-      button.setAttribute('aria-selected', String(count === selectedDiceCount));
-      button.classList.toggle('is-selected', count === selectedDiceCount);
-      button.addEventListener('click', () => {
-        selectedDiceCount = count;
-        renderDiceControls();
-      });
-      diceCount.append(button);
-    }
   };
 
   const insertChatInputText = (text) => {
@@ -408,30 +433,76 @@
     }
   };
 
-  acquireButton.addEventListener('click', async () => {
+  const storeAcquiredCharacters = (characters) => {
+    const previousCharacters = acquiredCharacters ?? [];
+    acquiredCharacters = characters.map((character) => {
+      const previous = previousCharacters.find((item) => item.id === character.id)
+        ?? previousCharacters.find((item) => item.name === character.name);
+      const number = Number(previous?.commandNumber);
+      return Number.isInteger(number) && number >= 1 && number <= 9
+        ? { ...character, commandNumber: number }
+        : character;
+    });
+    localStorage.setItem(CHARACTER_STORAGE_KEY, JSON.stringify(acquiredCharacters));
+    syncCommandMap();
+    renderCharacterChoices();
+  };
+
+  const acquireCharactersAction = async () => {
     acquireButton.disabled = true;
     status.textContent = 'キャラクター情報を取得しています…';
     try {
       const result = await chrome.runtime.sendMessage({ type: 'CCFOLIA_ACQUIRE_CHARACTERS' });
       if (!result?.ok) throw new Error(result?.error || 'キャラクター情報を取得できませんでした。');
-      const previousCharacters = acquiredCharacters ?? [];
-      acquiredCharacters = result.characters.map((character) => {
-        const previous = previousCharacters.find((item) => item.id === character.id)
-          ?? previousCharacters.find((item) => item.name === character.name);
-        const number = Number(previous?.commandNumber);
-        return Number.isInteger(number) && number >= 1 && number <= 9
-          ? { ...character, commandNumber: number }
-          : character;
-      });
-      localStorage.setItem(CHARACTER_STORAGE_KEY, JSON.stringify(acquiredCharacters));
-      syncCommandMap();
-      renderCharacterChoices();
+      storeAcquiredCharacters(result.characters);
       status.textContent = `${acquiredCharacters.length}人のキャラクター情報を取得しました。`;
     } catch (reason) {
       console.error('[CCFOLIA ステータス変更]', reason);
       status.textContent = reason instanceof Error ? reason.message : String(reason);
     } finally {
       acquireButton.disabled = false;
+    }
+  };
+
+  acquireButton.addEventListener('click', () => void acquireCharactersAction());
+
+  // キャラ情報・チャットパレット・チャットログを一括で取得します。
+  const acquireAllButton = document.getElementById('acquire-all');
+  acquireAllButton.addEventListener('click', async () => {
+    acquireAllButton.disabled = true;
+    acquireButton.disabled = true;
+    openChatPaletteButton.disabled = true;
+    refreshChatPaletteButton.disabled = true;
+    try {
+      status.textContent = 'キャラクター情報を取得しています…';
+      const result = await chrome.runtime.sendMessage({ type: 'CCFOLIA_ACQUIRE_CHARACTERS' });
+      if (!result?.ok) throw new Error(result?.error || 'キャラクター情報を取得できませんでした。');
+      storeAcquiredCharacters(result.characters);
+      let characterCount = acquiredCharacters.length;
+      let paletteCount = null;
+      chatPalettePanel.hidden = false;
+      chatPaletteItems.replaceChildren();
+      chatPaletteStatus.textContent = 'チャットパレットを取得しています…';
+      try {
+        await fetchChatPaletteEntries();
+        paletteCount = chatPaletteEntries.length;
+        chatPaletteSearch.value = '';
+        renderChatPalette();
+      } catch (reason) {
+        console.error('[CCFOLIA ステータス変更]', reason);
+        chatPalettePanel.hidden = true;
+        chatStatus.textContent = `チャットパレット: ${reason.message}`;
+      }
+      await refreshChatState({ force: true, includeCharacters: true });
+      status.textContent = `一括取得しました（キャラクター${characterCount}人${paletteCount !== null ? `、パレット${paletteCount}件` : ''}）。`;
+    } catch (reason) {
+      console.error('[CCFOLIA ステータス変更]', reason);
+      status.textContent = reason instanceof Error ? reason.message : String(reason);
+    } finally {
+      acquireAllButton.disabled = false;
+      acquireButton.disabled = false;
+      openChatPaletteButton.disabled = false;
+      refreshChatPaletteButton.disabled = false;
     }
   });
 
@@ -457,14 +528,23 @@
   themeSelect.addEventListener('change', (event) => {
     applyTheme(event.target.value);
   });
-  openChatPaletteButton.addEventListener('click', async () => {
+  // CCFOLIA側のチャットパレットを開いて全項目を走査し、結果をlocalStorageへ保存します。
+  const fetchChatPaletteEntries = async () => {
+    const result = await sendRequest('CCFOLIA_CHAT_PALETTE');
+    chatPaletteEntries = result.entries ?? [];
+    savePaletteEntries();
+    return chatPaletteEntries;
+  };
+
+  // 保存済みの一覧に関係なく、CCFOLIA側を走査し直して更新します。
+  const refetchChatPalette = async () => {
     openChatPaletteButton.disabled = true;
+    refreshChatPaletteButton.disabled = true;
     chatPaletteStatus.textContent = 'パレットを読み込んでいます…';
     chatPalettePanel.hidden = false;
     chatPaletteItems.replaceChildren();
     try {
-      const result = await sendRequest('CCFOLIA_CHAT_PALETTE');
-      chatPaletteEntries = result.entries ?? [];
+      await fetchChatPaletteEntries();
       chatPaletteSearch.value = '';
       renderChatPalette();
       chatPaletteSearch.focus();
@@ -473,8 +553,22 @@
       chatPalettePanel.hidden = true;
     } finally {
       openChatPaletteButton.disabled = false;
+      refreshChatPaletteButton.disabled = false;
     }
+  };
+
+  // 保存済みのパレットがあればCCFOLIA側を操作せず、そのまま表示します。
+  openChatPaletteButton.addEventListener('click', () => {
+    if (!chatPaletteEntries.length) {
+      void refetchChatPalette();
+      return;
+    }
+    chatPaletteSearch.value = '';
+    renderChatPalette();
+    chatPalettePanel.hidden = false;
+    chatPaletteSearch.focus();
   });
+  refreshChatPaletteButton.addEventListener('click', () => void refetchChatPalette());
   closeChatPaletteButton.addEventListener('click', () => {
     chatPalettePanel.hidden = true;
   });
