@@ -272,9 +272,10 @@
   // innerTextに紛れない zero-width 文字を除去します所在（あると正規表現が一致しません）。
   const stripInvisibleChars = (text) => (text ?? '').replace(/[\u200b\u200c\u200d\u2060]/g, '');
   // (1D100<=70) ＞ 20 ＞ 成功 を検出します。数値の表記揺れ（[20]、改行、20 / 100 など）を
-  // 許容しつつ、技能名や会話文中の「成功」「失敗」には反応しません。
+  // 許容しつつ、技能名や会話文中の「成功」「決定的成功」「スペシャル」「失敗」には反応しません。
   const rollFormulaPattern = /\(\s*\d+D\d+[^)\n]*\)/;
-  const rollKeywordPattern = /(ファンブル|失敗|成功)/;
+  const rollKeywordPattern = /(決定的成功\s*[／/]\s*スペシャル|決定的成功|スペシャル|成功|失敗|ファンブル)/;
+  const isSuccessKeyword = (keyword) => /^(?:成功|スペシャル|決定的成功|決定的成功\s*[／/]\s*スペシャル)$/.test(keyword);
   const rollResultColor = (segment) => {
     const formula = segment.match(rollFormulaPattern);
     if (!formula) return null;
@@ -284,7 +285,7 @@
     if (separator < 0) return null;
     const keyword = region.slice(separator + 1).match(rollKeywordPattern);
     if (!keyword) return null;
-    return keyword[1] === '成功' ? ROLL_SUCCESS_COLOR : ROLL_FAILURE_COLOR;
+    return isSuccessKeyword(keyword[1]) ? ROLL_SUCCESS_COLOR : ROLL_FAILURE_COLOR;
   };
   const appendRollResultSpan = (container, text, color) => {
     const span = document.createElement('span');
@@ -311,7 +312,7 @@
         continue;
       }
       const end = regionStart + separator + 1 + keyword.index + keyword[1].length;
-      appendRollResultSpan(container, value.slice(formulaMatch.index, end), keyword[1] === '成功' ? ROLL_SUCCESS_COLOR : ROLL_FAILURE_COLOR);
+      appendRollResultSpan(container, value.slice(formulaMatch.index, end), isSuccessKeyword(keyword[1]) ? ROLL_SUCCESS_COLOR : ROLL_FAILURE_COLOR);
       cursor = end;
       formulaRegex.lastIndex = end;
     }
