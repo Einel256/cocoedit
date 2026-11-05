@@ -313,16 +313,16 @@
     return commands;
   };
 
-  // 「res」コマンド（ダイス数の置き換え用の簡易記法）。
-  // 「r<n>」→ res、の形で、CCFOLIA側へ「res」+ n を送ります（例: r5 → res5）。
-  // 「r<n> <m>」→「res」+（n - m）を送ります（例: r5 3 → res2）。
-  // 「rg<n>」→「res」+（n/5 端数切捨て）を送ります（例: rg5 → res1）。
-  // 「rg<n> <m>」→「res」+（n/5 端数切捨て - m/5 端数切捨て）を送ります（例: rg10 4 → res2）。
-  // 最初に「s」を付けると、出力は「sres…」になり、CCFOLIA側でシークレットダイス扱いになります。
-  // （例: sr5 3 → sres2、srg10 4 → sres2）
+  // 「resb」コマンド（BCDiceのRESB（抵抗判定）出力に合わせた簡易記法）。
+  // 「r<n>」→ resb、の形で、CCFOLIA側へ「resb」+ n を送ります（例: r5 → resb5）。
+  // 「r<n> <m>」→「resb」+（n - m）を送ります（例: r5 3 → resb2）。
+  // 「rg<n>」→「resb」+（n/5 端数切捨て）を送ります（例: rg5 → resb1）。
+  // 「rg<n> <m>」→「resb」+（n/5 端数切捨て - m/5 端数切捨て）を送ります（例: rg10 4 → resb2）。
+  // 最初に「s」を付けると、出力は「sresb…」になり、CCFOLIA側でシークレットダイス扱いになります。
+  // （例: sr5 3 → sresb2、srg10 4 → sresb2）
   // 区切りはスペース・カンマ・ハイフン（r5-3 / rg10-4）のどれでも使えます。
   // n と m はいずれも自然数です。行単位で複数書けます（1行1コマンド）。
-  // 元のコマンド文は送らず、変換後の「sres…」/「res…」だけを送ります。
+  // 元のコマンド文は送らず、変換後の「sresb…」/「resb…」だけを送ります。
   const normalizeFullWidthDigits = (text) => text.replace(/[！-～]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0));
   const parseResCommandLines = (text) => {
     const lines = text.split(/\r?\n/).map((line) => normalizeFullWidthDigits(line).trim()).filter(Boolean);
@@ -339,7 +339,7 @@
       const value = m === null
         ? (isG ? Math.floor(n / 5) : n)
         : (isG ? Math.floor(n / 5) - Math.floor(m / 5) : n - m);
-      values.push(`${secret ? 's' : ''}res${value}`);
+      values.push(`${secret ? 's' : ''}resb${value}`);
     }
     return values;
   };
@@ -411,7 +411,7 @@
     }
   };
 
-  // 「r<n> <m>」「rg<n> <m>」をCCFOLIA本体の入力欄から送ったときも「res…」に置き換えて送ります。
+  // 「r<n> <m>」「rg<n> <m>」をCCFOLIA本体の入力欄から送ったときも「resb…」に置き換えて送ります。
   let handlingResCommand = false;
   const executeResCommand = async (textarea, values) => {
     if (handlingResCommand) return;
@@ -419,9 +419,9 @@
     try {
       clearReactTextarea(textarea);
       await sendChatText({ text: values.join('\n') });
-      log(`resコマンドを送信しました。`);
+      log(`resbコマンドを送信しました。`);
     } catch (reason) {
-      error('resコマンドを送信できませんでした。', reason);
+      error('resbコマンドを送信できませんでした。', reason);
     } finally {
       handlingResCommand = false;
     }
@@ -840,7 +840,7 @@
     const sendButton = form?.querySelector('button[type="submit"]');
     if (!sendButton || !sendButton.isConnected) throw new Error('CCFOLIAの送信ボタンが見つかりません。');
     const messageText = String(text ?? '');
-    // 「r<n> <m>」/「rg<n> <m>」は「res…」の形に置き換えて送ります（例: r5 3 → res2）。
+    // 「r<n> <m>」/「rg<n> <m>」は「resb…」の形に置き換えて送ります（例: r5 3 → resb2）。
     const sendText = makeResCommandText(messageText) ?? messageText;
     setReactInputValue(textarea, sendText);
     sendButton.click();

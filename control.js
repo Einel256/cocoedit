@@ -280,16 +280,21 @@
     if (autoDeleteEnabled) void applyAutoDeleteMode();
   });
 
-  // CCBなどのロール結果（…ここから　 (1D100<=68) ＞ 57 ＞ 成功　ここまで…）を色付けします。
+  // CCBなどのロール結果（…ここから　 (1D100<=68) ＞ 57 ＞ 成功　ここまで…）と、
+  // resb / sresb（抵抗判定・シークレット）の出力を色付けします。
   const ROLL_SUCCESS_COLOR = '#2089dc';
   const ROLL_FAILURE_COLOR = '#d1004a';
   // innerTextに紛れない zero-width 文字を除去します所在（あると正規表現が一致しません）。
   const stripInvisibleChars = (text) => (text ?? '').replace(/[\u200b\u200c\u200d\u2060]/g, '');
-  // (1D100<=70) ＞ 20 ＞ 成功 を検出します。数値の表記揺れ（[20]、改行、20 / 100 など）を
-  // 許容しつつ、技能名や会話文中の「成功」「決定的成功」「スペシャル」「失敗」には反応しません。
-  const rollFormulaPattern = /\(\s*\d+D\d+[^)\n]*\)/;
+  // (1D100<=70) ＞ 20 ＞ 成功、resb / sresb（抵抗判定・シークレット）の出力を検出します。
+  // 数値の表記揺れ（[20]、改行、20 / 100 など）を許容しつつ、技能名や会話文中の
+  // 「成功」「決定的成功」「スペシャル」「失敗」には反応しません。
+  const rollDiceFormulaPattern = /\(\s*\d+[Dd][\d+][^)\n]*\)/;
+  const rollFormulaPattern = new RegExp(`${rollDiceFormulaPattern.source}|[sS]?[rR][eE][sS][bB]\\s*(?:\\([^)\\n]*\\)|\\d+)`);
   const rollKeywordPattern = /(決定的成功\s*[／/]\s*スペシャル|決定的成功|スペシャル|成功|失敗|ファンブル)/;
   const isSuccessKeyword = (keyword) => /^(?:成功|スペシャル|決定的成功|決定的成功\s*[／/]\s*スペシャル)$/.test(keyword);
+  // ダイス式（カッコ始まり）かどうか。resb / sresb はカッコ始まりではないので区別できます。
+  const isDiceFormulaMatch = (match) => match[0].startsWith('(');
   const rollResultColor = (segment) => {
     const formula = segment.match(rollFormulaPattern);
     if (!formula) return null;
@@ -315,6 +320,11 @@
     let formulaMatch;
     while ((formulaMatch = formulaRegex.exec(value)) !== null) {
       if (formulaMatch.index > cursor) container.append(value.slice(cursor, formulaMatch.index));
+      const matchStart = formulaMatch.index;
+      // resb / sresb の後に (N D M…) ＞ … の出力が続く場合は、そのダイス式を対象にします。
+      const lookStart = matchStart + formulaMatch[0].length;
+      const diceFormula = isDiceFormulaMatch(formulaMatch) ? null : value.slice(lookStart, lookStart + 120).match(rollDiceFormulaPattern);
+      if (diceFormula) formulaMatch = { index: lookStart + diceFormula.index, 0: diceFormula[0] };
       const regionStart = formulaMatch.index + formulaMatch[0].length;
       const region = value.slice(regionStart, regionStart + 60);
       const separator = region.search(/[＞>]/);
@@ -326,7 +336,11 @@
         continue;
       }
       const end = regionStart + separator + 1 + keyword.index + keyword[1].length;
-      appendRollResultSpan(container, value.slice(formulaMatch.index, end), isSuccessKeyword(keyword[1]) ? ROLL_SUCCESS_COLOR : ROLL_FAILURE_COLOR);
+      // ダイス式（resb直後の出力を含む）から判定語までをまとめて1色で色付けします。
+      // resb単独（後ろにダイス式の出力が続かない）では、コマンド部を通常色のまま判定語だけを色付けします。
+      const start = isDiceFormulaMatch(formulaMatch) || diceFormula ? formulaMatch.index : regionStart + separator + 1 + keyword.index;
+      if (start > matchStart) container.append(value.slice(matchStart, start));
+      appendRollResultSpan(container, value.slice(start, end), isSuccessKeyword(keyword[1]) ? ROLL_SUCCESS_COLOR : ROLL_FAILURE_COLOR);
       cursor = end;
       formulaRegex.lastIndex = end;
     }
@@ -344,9 +358,16 @@
     let inSegment = false;
     const flushBuffer = (withinSegment) => {
       if (!buffer) return;
-      const color = withinSegment ? rollResultColor(buffer) : null;
-      if (color) appendRollResultSpan(container, buffer, color);
-      else container.append(buffer);
+      // resb / sresb の出力は、コマンド部を色付けせず判定語だけを色付けするため、
+      // 範囲全体を一色にせず個別の分割処理に任せます。
+      const formula = withinSegment ? buffer.match(rollFormulaPattern) : null;
+      if (formula && !isDiceFormulaMatch(formula)) {
+        appendDiceResultText(container, buffer);
+      } else {
+        const color = withinSegment ? rollResultColor(buffer) : null;
+        if (color) appendRollResultSpan(container, buffer, color);
+        else container.append(buffer);
+      }
       buffer = '';
     };
     for (const part of parts) {
