@@ -187,6 +187,38 @@ CCFOLIAのルームを操作するChrome拡張機能（Manifest V3）です。�
 - 各キャラクターの処理後に編集画面を閉じ、反映を待ってから次へ進みます。待ち時間は、編集画面を開いた後40ms、ボタン間5ms、閉じた後300msです。
 - 実行済みの変更を拡張機能から取り消す機能はありません。
 
+### resコマンド（r / rg）
+
+入力全体が次の形式で構成されているとき、CCFOLIA本体・制御ウィンドウのどちらの入力欄からでも、計算結果を `res<値>` の形でCCFOLIAのチャットへ送信します。**コマンド文そのものは送らず、変換結果の `res…` だけを送ります。**
+
+```text
+r<n>        → res（n）
+r<n> <m>    → res（n - m）
+rg<n>       → res（n/5 端数切捨て）
+rg<n> <m>   → res（n/5 端数切捨て - m/5 端数切捨て）
+```
+
+- `<n>` `<m>` はいずれも自然数（1〜999999）です。
+- 区切りはスペース（複数可）・カンマ・**ハイフン**（`r5-3`、`rg10-4`）のどれでも使えます。
+- `<m>` を省略した場合は、値そのものを送ります（例: `r5` → `res5`、`rg5` → `res1`）。
+- 大文字小文字・全角英数字のどちらでも入力できます（例: `R5-3`、`ｒ５　３`）。
+- **先頭に `s` を付けるとシークレットダイスになります**。出力は `s` 接頭辞付きの `sres…` です（例: `sr5 3` → `sres2`、`srg10 4` → `sres2`、`srg10-4` → `sres2`）。
+- 複数行に対応します（1行1コマンド）。送信は、値を改行でつないだ1発言になります。通常とシークレットを混在できます（例: `r5 3` と `sr5 3` の2行 → `res2` と `sres2`）。
+- 結果が `0` や負の値でもそのまま送ります（例: `res0`、`res-2`）。
+- マッチしない入力（通常の文章、既存のステータスコマンド）はそのままのチャット文として送ります。
+- 変換は送信時に行われ、制御ウィンドウの入力欄は通常どおりすぐクリアされます。送信失敗時は元の入力を復元します。
+
+| 入力例 | 送信される内容 |
+| --- | --- |
+| `r5` | `res5` |
+| `rg5` | `res1` |
+| `r5 3` ／ `r5-3` ／ `r5,3` | `res2` |
+| `r3 5` | `res-2` |
+| `rg10 4` ／ `rg10-4` | `res2` |
+| `rg12 9` | `res1` |
+| `sr5 3` ／ `srg10-4` | `sres2`（シークレットダイス） |
+| `r5 3` + `sr5 3`（2行） | `res2` と `sres2`（改行で1発言） |
+
 ## セットアップ
 
 1. Chromeで `chrome://extensions` を開きます。
@@ -243,7 +275,7 @@ CCFOLIAのルームを操作するChrome拡張機能（Manifest V3）です。�
 - 自動削除: `findSkipDialog`、`findCloseOnlyDialog`、`findMessageDialog`、`dialogSignature`、`runSkipPhase`、`closeCurrentMessage`、`autoSkipTick`、`setAutoSkipMode`、`getAutoSkipStatus`。スキップは `button[aria-label*="スキップ"]`、閉じるは `button[aria-label*="閉じる"]` または `svg[data-testid="CloseIcon"]`。
 - キャラクター取得: `getCharacterName`、`acquireCharacters`。
 - ステータス操作: `METRICS`、`findMetricRows`、`readCurrentStatus`、`clickOutsideEditor`、`applyToEveryone`。増減ボタンは `button[aria-label="HPを増やす"]` などの `aria-label` で探します。
-- コマンド解析: `parseChatCommands`、`interceptChatCommand`、`executeChatCommand`。
+- コマンド解析: `parseChatCommands`、`parseResCommandLines`、`makeResCommandText`、`interceptChatCommand`、`executeChatCommand`、`executeResCommand`。
 
 ## 注意・既知の制約
 

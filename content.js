@@ -313,6 +313,41 @@
     return commands;
   };
 
+  // 「res」コマンド（ダイス数の置き換え用の簡易記法）。
+  // 「r<n>」→ res、の形で、CCFOLIA側へ「res」+ n を送ります（例: r5 → res5）。
+  // 「r<n> <m>」→「res」+（n - m）を送ります（例: r5 3 → res2）。
+  // 「rg<n>」→「res」+（n/5 端数切捨て）を送ります（例: rg5 → res1）。
+  // 「rg<n> <m>」→「res」+（n/5 端数切捨て - m/5 端数切捨て）を送ります（例: rg10 4 → res2）。
+  // 最初に「s」を付けると、出力は「sres…」になり、CCFOLIA側でシークレットダイス扱いになります。
+  // （例: sr5 3 → sres2、srg10 4 → sres2）
+  // 区切りはスペース・カンマ・ハイフン（r5-3 / rg10-4）のどれでも使えます。
+  // n と m はいずれも自然数です。行単位で複数書けます（1行1コマンド）。
+  // 元のコマンド文は送らず、変換後の「sres…」/「res…」だけを送ります。
+  const normalizeFullWidthDigits = (text) => text.replace(/[！-～]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0));
+  const parseResCommandLines = (text) => {
+    const lines = text.split(/\r?\n/).map((line) => normalizeFullWidthDigits(line).trim()).filter(Boolean);
+    if (!lines.length) return null;
+    const values = [];
+    for (const line of lines) {
+      const match = line.match(/^(s)?(rg?)(\d+)(?:(?:\s*[-,]\s*|\s+)(\d+))?$/i);
+      if (!match) return null;
+      const secret = Boolean(match[1]);
+      const n = Number(match[3]);
+      const m = match[4] !== undefined ? Number(match[4]) : null;
+      if (n === 0 || n > 999999 || (match[4] !== undefined && (m === 0 || m > 999999))) return null;
+      const isG = match[2].toLowerCase() === 'rg';
+      const value = m === null
+        ? (isG ? Math.floor(n / 5) : n)
+        : (isG ? Math.floor(n / 5) - Math.floor(m / 5) : n - m);
+      values.push(`${secret ? 's' : ''}res${value}`);
+    }
+    return values;
+  };
+  const makeResCommandText = (text) => {
+    const values = parseResCommandLines(text);
+    return values ? values.join('\n') : null;
+  };
+
   const findChatTextarea = (target) => {
     if (!(target instanceof HTMLTextAreaElement)
       || target.name !== 'text'
@@ -376,6 +411,22 @@
     }
   };
 
+  // 「r<n> <m>」「rg<n> <m>」をCCFOLIA本体の入力欄から送ったときも「res…」に置き換えて送ります。
+  let handlingResCommand = false;
+  const executeResCommand = async (textarea, values) => {
+    if (handlingResCommand) return;
+    handlingResCommand = true;
+    try {
+      clearReactTextarea(textarea);
+      await sendChatText({ text: values.join('\n') });
+      log(`resコマンドを送信しました。`);
+    } catch (reason) {
+      error('resコマンドを送信できませんでした。', reason);
+    } finally {
+      handlingResCommand = false;
+    }
+  };
+
   const interceptChatCommand = (event, textarea) => {
     if (handlingChatCommand) {
       event.preventDefault();
@@ -383,7 +434,15 @@
       return;
     }
     const commands = parseChatCommands(textarea.value);
-    if (!commands) return;
+    if (!commands) {
+      // 自動削除などのステータスコマンドでない場合は、「res」コマンドを確認します。
+      const resValues = parseResCommandLines(textarea.value);
+      if (!resValues) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void executeResCommand(textarea, resValues);
+      return;
+    }
     event.preventDefault();
     event.stopImmediatePropagation();
     void executeChatCommand(textarea, commands);
@@ -781,14 +840,16 @@
     const sendButton = form?.querySelector('button[type="submit"]');
     if (!sendButton || !sendButton.isConnected) throw new Error('CCFOLIAの送信ボタンが見つかりません。');
     const messageText = String(text ?? '');
-    setReactInputValue(textarea, messageText);
+    // 「r<n> <m>」/「rg<n> <m>」は「res…」の形に置き換えて送ります（例: r5 3 → res2）。
+    const sendText = makeResCommandText(messageText) ?? messageText;
+    setReactInputValue(textarea, sendText);
     sendButton.click();
     // Wait for CCFOLIA's React submit handler to clear the draft before the
     // control window reads the updated room log. Kept very short so repeated
     // dice/SAN sends do not create a noticeable "cannot send" window.
     await waitFor(() => textarea.isConnected && textarea.value === '', 300);
-    if (!parseChatCommands(messageText)) {
-      const expectedText = messageText.replace(/\s+/g, ' ').trim();
+    if (!parseChatCommands(sendText)) {
+      const expectedText = sendText.replace(/\s+/g, ' ').trim();
       await waitFor(() => {
         const entries = [...document.querySelectorAll('ul[aria-label="ルームチャット"][role="log"] [data-index]')];
         const latest = entries.at(-1);
