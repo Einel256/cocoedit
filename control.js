@@ -175,6 +175,19 @@
     return result;
   };
 
+  // 選択中タブの赤い下線は、.chat-tabs の疑似要素を各タブの位置へスライドさせて描きます。
+  // 下線をつらぬく静止の罫線は付けません（CSSは .chat-tabs::after を参照）。
+  const updateChatTabIndicator = () => {
+    const selected = chatTabs.querySelector('button.chat-tab.is-selected');
+    if (!selected) {
+      chatTabs.style.setProperty('--chat-tab-indicator-width', '0px');
+      return;
+    }
+    chatTabs.style.setProperty('--chat-tab-indicator-left', `${selected.offsetLeft}px`);
+    chatTabs.style.setProperty('--chat-tab-indicator-width', `${selected.offsetWidth}px`);
+  };
+  window.addEventListener('resize', updateChatTabIndicator);
+
   // チャットタブはCCFOLIA風のボタン列です。クリックで切り替えます。
   chatTabs.addEventListener('click', async (event) => {
     const button = event.target.closest('button.chat-tab');
@@ -187,6 +200,7 @@
       tab.classList.toggle('is-selected', tab === button);
       tab.setAttribute('aria-selected', tab === button ? 'true' : 'false');
     }
+    updateChatTabIndicator();
     try {
       await sendRequest('CCFOLIA_CHAT_SELECT_TAB', { index });
       await refreshChatState();
@@ -386,6 +400,7 @@
       if (tab.selected) selectedTab = String(tab.index);
     }
     if (selectedTab !== null) selectedTabIndex = selectedTab;
+    updateChatTabIndicator();
 
     // 新しく検知された未着タブを、一度だけ状態表示に案内します（以降はタブの「●」が目印）。
     const unreadTabs = chatState.unreadTabs ?? [];
@@ -471,30 +486,92 @@
 
   // ダイスショートカット。同じボタンを連続クリックした回数で個数を決めます。
   // 1回目で 1d6 を挿入し、続けて押すと挿入済みの式を 2d6、3d6 …へ差し替えます。
-  // 別のダイスボタンを押すと連続カウントはリセットされます。
+  // 別の面数のボタンを押すと、カーソルの直前がダイス式なら「+」で連結して合成します
+  // （例: d2 → d4 で 1d2+1d4）。
   const diceLastInsert = new Map();
-  const insertDiceFormula = (sides) => {
-    for (const key of [...diceLastInsert.keys()]) {
-      if (key !== sides) diceLastInsert.delete(key);
+  // 記憶した位置に式がまだ残っているか確認します。入力内容が手直しされていたら忘れます。
+  const storedFormulaAt = (storedSides, entry) => Boolean(entry)
+    && entry.end <= chatInput.value.length
+    && chatInput.value.slice(entry.start, entry.end) === `${entry.count}d${storedSides}`;
+  const pruneDiceLastInsert = () => {
+    for (const [storedSides, entry] of diceLastInsert) {
+      if (!storedFormulaAt(storedSides, entry)) diceLastInsert.delete(storedSides);
     }
-    let start = chatInput.selectionStart ?? chatInput.value.length;
-    let end = chatInput.selectionEnd ?? start;
-    let count = 1;
-    const previous = diceLastInsert.get(sides);
-    const previousFormula = previous ? `${previous.count}d${sides}` : null;
-    if (previous && previousFormula
-      && previous.start >= 0 && previous.end <= chatInput.value.length
-      && chatInput.value.slice(previous.start, previous.end) === previousFormula) {
-      count = previous.count + 1;
-      start = previous.start;
-      end = previous.end;
+  };
+  // 式の挿し替えでテキスト長が変わったとき、後ろの記憶位置をずらして合わせます。
+  const shiftDiceEntries = (from, delta) => {
+    for (const entry of diceLastInsert.values()) {
+      if (entry.start >= from) {
+        entry.start += delta;
+        entry.end += delta;
+      }
     }
-    const formula = `${count}d${sides}`;
-    chatInput.setRangeText(formula, start, end, 'end');
-    diceLastInsert.set(sides, { start, end: start + formula.length, count });
+  };
+  const commitDiceInput = (caretIndex) => {
     chatInput.focus();
-    chatInput.selectionStart = chatInput.selectionEnd = start + formula.length;
+    chatInput.selectionStart = chatInput.selectionEnd = caretIndex;
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    pruneDiceLastInsert();
+  };
+  const insertDiceFormula = (sides) => {
+    const previous = diceLastInsert.get(sides);
+    if (storedFormulaAt(sides, previous)) {
+      // 同じボタンを続けて押したときは、挿入済みの式の個数を増やして差し替えます。
+      const count = previous.count + 1;
+      const formula = `${count}d${sides}`;
+      shiftDiceEntries(previous.end, formula.length - (previous.end - previous.start));
+      chatInput.setRangeText(formula, previous.start, previous.end, 'end');
+      diceLastInsert.set(sides, { start: previous.start, end: previous.start + formula.length, count });
+      commitDiceInput(previous.start + formula.length);
+      return;
+    }
+    // 新しく挿入します。カーソルの直前が「ダイス式（+ダイス式…）」の連結なら、
+    // 連結の中に同じ面数の項を探して個数を増やします（例: 1d2 の後ろで d2 → 2d2）。
+    // なければ連結の末尾に「+」を付けて合成します（例: d2 → d4 で 1d2+1d4）。
+    let at = chatInput.selectionStart ?? chatInput.value.length;
+    let end = chatInput.selectionEnd ?? at;
+    const chain = (chatInput.value.slice(0, at).match(/\d+d\d+(?:\+\d+d\d+)*$/) ?? [])[0];
+    if (chain) {
+      const chainStart = at - chain.length;
+      let chainEnd = at;
+      for (;;) {
+        const match = chatInput.value.slice(chainEnd).match(/^\+\d+d\d+/);
+        if (!match) break;
+        chainEnd += match[0].length;
+      }
+      // 連結の中の同じ面数の項（最後尾のもの）を探します。
+      const termPattern = new RegExp(`(\\d+)d${sides}(?!\\d)`, 'g');
+      termPattern.lastIndex = chainStart;
+      let term = null;
+      let termMatch;
+      while ((termMatch = termPattern.exec(chatInput.value)) !== null) {
+        if (termMatch.index >= chainEnd) break;
+        term = termMatch;
+      }
+      if (term) {
+        const count = Number(term[1]) + 1;
+        const formula = `${count}d${sides}`;
+        shiftDiceEntries(term.index + term[0].length, formula.length - term[0].length);
+        chatInput.setRangeText(formula, term.index, term.index + term[0].length, 'end');
+        diceLastInsert.set(sides, { start: term.index, end: term.index + formula.length, count });
+        commitDiceInput(term.index + formula.length);
+        return;
+      }
+      at = chainEnd;
+      end = at;
+      const chainInsertText = `+1d${sides}`;
+      chatInput.setRangeText(chainInsertText, at, end, 'end');
+      shiftDiceEntries(end, chainInsertText.length);
+      diceLastInsert.set(sides, { start: at + 1, end: at + chainInsertText.length, count: 1 });
+      commitDiceInput(at + chainInsertText.length);
+      return;
+    }
+    // ダイス式の直後でないときは、カーソル位置（選択範囲）へそのまま挿入します。
+    const plainInsertText = `1d${sides}`;
+    chatInput.setRangeText(plainInsertText, at, end, 'end');
+    shiftDiceEntries(end, plainInsertText.length - (end - at));
+    diceLastInsert.set(sides, { start: at, end: at + plainInsertText.length, count: 1 });
+    commitDiceInput(at + plainInsertText.length);
   };
 
   const renderDiceControls = () => {
@@ -542,8 +619,10 @@
       hideSkillSuggestions();
       return;
     }
+    // メッセージ入力中の技能候補には、ダメージ判定の式は出しません（/g コマンドからは選べます）。
     const filtered = chatPaletteEntries.filter((entry) =>
-      entry.toLocaleLowerCase().includes(q.toLocaleLowerCase())
+      !entry.includes('ダメージ判定')
+      && entry.toLocaleLowerCase().includes(q.toLocaleLowerCase())
     ).slice(0, 10);
 
     if (filtered.length === 0) {

@@ -28,6 +28,11 @@ body[data-theme="original"] button {
 body[data-theme="original"] button:hover:not(:disabled) {
   background: #444444;
 }
+/* チャットタブだけは灰色の背景を付けず、文字だけの表示にします（選択中は下線のみ）。 */
+body[data-theme="original"] button.chat-tab,
+body[data-theme="original"] button.chat-tab:hover:not(:disabled) {
+  background: transparent;
+}
 
 /* フォームプレースホルダー */
 body[data-theme="original"] ::placeholder {
@@ -204,11 +209,13 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 .message-content p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #dcdfe6; font-size: 13px; line-height: 1.55; }
 /* チャットタブ（CCFOLIA風のボタン列。未読は赤い●） */
 .chat-toolbar { display: flex; align-items: center; gap: 6px; padding-top: 2px; }
-.chat-tabs { flex: 1 1 auto; display: flex; align-items: flex-end; gap: 2px; min-width: 0; overflow-x: auto; padding: 2px 2px 0; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+.chat-tabs { position: relative; flex: 1 1 auto; display: flex; align-items: flex-end; gap: 2px; min-width: 0; overflow-x: auto; padding: 2px 2px 0; scrollbar-width: none; }
+/* 選択中タブの赤い下線。スライドして移動するので、静止の罫線は付けません。 */
+.chat-tabs::after { content: ""; position: absolute; bottom: 0; left: var(--chat-tab-indicator-left, 0); width: var(--chat-tab-indicator-width, 0); height: 3px; border-radius: 3px; background: var(--accent); transition: left .18s ease, width .18s ease; pointer-events: none; }
 .chat-tabs::-webkit-scrollbar { display: none; }
-.chat-tab { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; margin: 0; padding: 6px 9px; border: none; border-radius: 6px 6px 0 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; white-space: nowrap; }
-.chat-tab:hover:not(.is-selected) { color: var(--text); background: rgb(255 255 255 / .06); }
-.chat-tab.is-selected { color: #fff; border-bottom-color: var(--accent); font-weight: 600; }
+.chat-tab { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; margin: 0; padding: 6px 9px; border: none; border-radius: 6px 6px 0 0; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; white-space: nowrap; }
+.chat-tab:hover:not(.is-selected) { color: var(--text); }
+.chat-tab.is-selected { color: #fff; font-weight: 600; }
 .chat-tab.has-unread { color: var(--text); font-weight: 600; }
 .chat-tab-badge { position: absolute; top: 3px; right: 1px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 4px var(--accent); }
 #refresh-chat { flex: 0 0 auto; padding: 6px 12px; color: #b7bdc9; }
@@ -254,7 +261,7 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 .dice-shortcuts button:hover:not(:disabled) { border-color: rgb(255 255 255 / .3); background: rgb(52 57 70); }
 
 /* 入力欄（CCFOLIA本家風のフラットなメッセージボックス） */
-.message-composer { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-rows: minmax(84px, 1fr) auto; align-items: end; gap: 6px; position: relative; }
+.message-composer { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-rows: auto minmax(84px, 1fr); align-items: end; gap: 6px; position: relative; }
 
 /* 技能候補・コマンド候補ドロップダウン（入力欄の上に、大きく開きます） */
 .skill-suggestions {
@@ -289,9 +296,9 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
   outline-offset: -1px;
 }
 .suggestion-empty { display: block; padding: 6px 10px; color: var(--muted); font-size: 12px; cursor: default; }
-#chat-input { grid-column: 1 / -1; grid-row: 1; width: 100%; min-height: 84px; padding: 9px 11px; resize: vertical; border: none; border-radius: 8px; background: rgb(255 255 255 / .04); font-size: 13.5px; line-height: 1.5; }
+#chat-input { grid-column: 1 / -1; grid-row: 2; width: 100%; min-height: 84px; padding: 9px 11px; resize: vertical; border: none; border-radius: 8px; background: rgb(255 255 255 / .04); font-size: 13.5px; line-height: 1.5; }
 #chat-input:focus-visible { outline: none; background: rgb(255 255 255 / .06); }
-#clear-message, #send-message { grid-row: 2; min-height: 28px; padding: 4px 12px; border: none; border-radius: 6px; background: transparent; color: var(--muted); font-weight: 500; font-size: 12.5px; }
+#clear-message, #send-message { grid-row: 1; min-height: 28px; padding: 4px 12px; border: none; border-radius: 6px; background: transparent; color: var(--muted); font-weight: 500; font-size: 12.5px; }
 #clear-message { grid-column: 2; }
 #send-message { grid-column: 3; }
 #clear-message:hover:not(:disabled), #send-message:hover:not(:disabled) { background: rgb(255 255 255 / .07); color: var(--text); }
