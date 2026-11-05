@@ -24,6 +24,7 @@
   const skillSuggestions = document.getElementById('skill-suggestions');
   const diceShortcuts = document.getElementById('dice-shortcuts');
   const aliasButtons = document.getElementById('alias-buttons');
+  const aliasButtonsToggle = document.getElementById('alias-buttons-toggle');
   const aliasNameInput = document.getElementById('alias-name');
   const aliasTextInput = document.getElementById('alias-text');
   const aliasAddButton = document.getElementById('alias-add');
@@ -42,6 +43,7 @@
   const CHARACTER_STORAGE_KEY = 'ccfolia-status-characters-v1';
   const PALETTE_STORAGE_KEY = 'ccfolia-chat-palette-v1';
   const ALIAS_STORAGE_KEY = 'ccfolia-alias-v1';
+  const ALIAS_BUTTONS_VISIBLE_KEY = 'ccfolia-alias-buttons-visible-v1';
   settingsToggle?.addEventListener('click', () => {
     if (!setupSection) return;
     setupSection.open = !setupSection.open;
@@ -658,6 +660,24 @@
       aliasButtons.append(button);
     }
   };
+  // aliasボタン列は既定で非表示。設定の「ボタン列：表示／非表示」で切り替えます（設定は保存されます）。
+  let aliasButtonsVisible = (() => {
+    try {
+      return JSON.parse(localStorage.getItem(ALIAS_BUTTONS_VISIBLE_KEY) || 'false') === true;
+    } catch {
+      return false;
+    }
+  })();
+  const applyAliasButtonsVisibility = () => {
+    aliasButtonsToggle.textContent = aliasButtonsVisible ? 'ボタン列：表示' : 'ボタン列：非表示';
+    aliasButtonsToggle.setAttribute('aria-pressed', String(aliasButtonsVisible));
+    aliasButtons.hidden = !aliasButtonsVisible;
+  };
+  aliasButtonsToggle.addEventListener('click', () => {
+    aliasButtonsVisible = !aliasButtonsVisible;
+    localStorage.setItem(ALIAS_BUTTONS_VISIBLE_KEY, JSON.stringify(aliasButtonsVisible));
+    applyAliasButtonsVisibility();
+  });
   const runAliasEntry = async (index, button) => {
     const entry = aliasEntries[index];
     if (!entry) return;
@@ -806,17 +826,17 @@
     suggestionHighlightIndex = -1;
   };
 
-  /* /m /g /c /s コマンド。fzf風のTab補完で選択します。
-     /m = チャットタブ移動 /g = 技能選択（チャットパレット） /c = キャラ選択 /s = シーン選択 */
+  /* /m /g /c /s /a コマンド。fzf風のTab補完で選択します。
+     /m = チャットタブ移動 /g = 技能選択（チャットパレット） /c = キャラ選択 /s = シーン選択 /a = alias送信 */
   const commandSuggestions = document.getElementById('command-suggestions');
-  let commandMode = null; // 'm' | 'g' | 'c'
+  let commandMode = null; // 'm' | 'g' | 'c' | 's' | 'a'
   let commandMatches = [];
   let commandIndex = 0;
   let commandQuery = null;
-  // 「/m」「/g」「/c」「/s」の入力をコマンドとして扱います（半角スペースは任意）。
+  // 「/m」「/g」「/c」「/s」「/a」の入力をコマンドとして扱います（半角スペースは任意）。
   // ただし、本家の「/scene シーン名」コマンドを手入力したときはセレクタに奪わず、そのまま送信させます。
   const parseCommandInput = (value) => {
-    const match = value.match(/^\/([mgcs])(.*)$/);
+    const match = value.match(/^\/([amgcs])(.*)$/);
     if (!match) return null;
     if (match[1] === 's' && value.toLowerCase().startsWith('/scene')) return null;
     return { mode: match[1], query: match[2].replace(/^\s+/, '') };
@@ -832,6 +852,10 @@
     if (mode === 's') {
       // シーンの切替は、実質的に本家の「/scene シーン名」チャットコマンドを送るのと同じです。
       return sceneEntries.map((entry) => ({ label: entry, value: `/scene ${entry}` }));
+    }
+    if (mode === 'a') {
+      // aliasは名前で選択すると、その実行（内容が複数行なら上から順に送信）をします。
+      return aliasEntries.map((entry, index) => ({ label: entry.name, title: entry.name + '：' + entry.text.replace(/\n/g, ' / '), aliasIndex: index }));
     }
     return (latestChatState?.characters ?? [])
       .map((character) => ({
@@ -851,6 +875,7 @@
     if (mode === 'm') return '一致するチャットタブがありません。';
     if (mode === 'g') return '一致する技能がありません。「一括取得」やパレットの「再取得」で取得してください。';
     if (mode === 's') return 'シーン候補がありません。入力欄が空の状態から取得するか、「一括取得」で取得してください。';
+    if (mode === 'a') return 'aliasがありません。「設定・キャラクター情報」でaliasを登録してください。';
     return 'キャラクター候補がありません。「更新」または「一括取得」で候補を取得してください。';
   };
 
@@ -897,7 +922,7 @@
         button.className = 'skill-suggestion-item';
         button.classList.toggle('is-highlighted', index === commandIndex);
         button.textContent = candidate.label;
-        button.title = candidate.label;
+        button.title = candidate.title ?? candidate.label;
         button.addEventListener('click', () => {
           commandIndex = index;
           void executeCommand();
@@ -943,6 +968,15 @@
       return;
     }
     const selected = commandMatches[commandIndex];
+    if (commandMode === 'a') {
+      // aliasを選択したら、その内容を送ります（ボタンを押したときと同じ挙動です）。
+      chatInput.value = '';
+      hideCommandSuggestions();
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      chatInput.focus();
+      await runAliasEntry(selected.aliasIndex);
+      return;
+    }
     if (commandMode === 'g') {
       // 技能を選択したら、そのテキストを入力欄に置きます（送信はしません）。
       chatInput.value = selected.value;
@@ -1263,6 +1297,7 @@
   renderDiceControls();
   renderAliasButtons();
   renderAliasEditor();
+  applyAliasButtonsVisibility();
   syncCommandMap();
   void refreshChatState({ force: true, includeCharacters: true });
   void syncAutoSkipStatus();

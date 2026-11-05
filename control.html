@@ -37,6 +37,10 @@
         </section>
         <section class="alias-settings" aria-label="エイリアス設定">
           <div class="alias-editor">
+            <strong>エイリアス（alias）</strong>
+            <button id="alias-buttons-toggle" type="button" aria-pressed="false" title="チャット欄のaliasボタン列の表示を切り替えます（既定は非表示）">ボタン列：非表示</button>
+          </div>
+          <div class="alias-editor">
             <label for="alias-name">alias名</label>
             <input id="alias-name" type="text" placeholder="例: SANチェック" maxlength="20">
             <button id="alias-add" type="button">追加</button>
@@ -50,7 +54,7 @@
         <button id="acquire-all" type="button" title="キャラ情報・チャットパレット・チャットログを一括で取得します">一括取得</button>
         <div id="characters" aria-label="キャラクター番号割り当て"></div>
         <output id="status" role="status">キャラ情報を取得してください。</output>
-        <small>番号は1〜9です。例: 1s-10、2h20、8m=10　　入力欄からは /m タブ・/g 技能・/c キャラ・/s シーン を選べます</small>
+        <small>番号は1〜9です。例: 1s-10、2h20、8m=10　　入力欄からは /m タブ・/g 技能・/c キャラ・/s シーン・/a alias を選べます</small>
       </details>
 
       <section class="chat-section" aria-label="ルームチャット">
