@@ -23,6 +23,13 @@
   const closeChatPaletteButton = document.getElementById('close-chat-palette');
   const skillSuggestions = document.getElementById('skill-suggestions');
   const diceShortcuts = document.getElementById('dice-shortcuts');
+  const aliasButtons = document.getElementById('alias-buttons');
+  const aliasNameInput = document.getElementById('alias-name');
+  const aliasTextInput = document.getElementById('alias-text');
+  const aliasAddButton = document.getElementById('alias-add');
+  const aliasCancelButton = document.getElementById('alias-cancel');
+  const aliasList = document.getElementById('alias-list');
+  const aliasStatus = document.getElementById('alias-status');
   const autoDeleteToggle = document.getElementById('auto-delete-toggle');
   const autoSkipInterval = document.getElementById('auto-skip-interval');
   const skipStatus = document.getElementById('skip-status');
@@ -34,6 +41,7 @@
   const FONT_STORAGE_KEY = 'ccfolia-font-v1';
   const CHARACTER_STORAGE_KEY = 'ccfolia-status-characters-v1';
   const PALETTE_STORAGE_KEY = 'ccfolia-chat-palette-v1';
+  const ALIAS_STORAGE_KEY = 'ccfolia-alias-v1';
   settingsToggle?.addEventListener('click', () => {
     if (!setupSection) return;
     setupSection.open = !setupSection.open;
@@ -621,6 +629,134 @@
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
   };
 
+  // --- エイリアス ---
+  // 設定画面で登録した内容を1クリックで送るボタン列。内容が複数行のときは
+  // 上の行から順に1行ずつ送ります（送信はCCFOLIA側の変換・ステータスコマンドと同じ経路）。
+  let aliasEntries = (() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(ALIAS_STORAGE_KEY) || 'null');
+      return Array.isArray(stored)
+        ? stored.filter((entry) => entry && typeof entry.name === 'string' && typeof entry.text === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  })();
+  let aliasEditingIndex = -1;
+  const saveAliasEntries = () => {
+    localStorage.setItem(ALIAS_STORAGE_KEY, JSON.stringify(aliasEntries));
+  };
+  const renderAliasButtons = () => {
+    aliasButtons.replaceChildren();
+    for (const [index, entry] of aliasEntries.entries()) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = entry.name;
+      button.title = entry.text.replace(/\n/g, ' / ');
+      button.setAttribute('aria-label', `エイリアス「${entry.name}」を送信`);
+      button.addEventListener('click', () => void runAliasEntry(index, button));
+      aliasButtons.append(button);
+    }
+  };
+  const runAliasEntry = async (index, button) => {
+    const entry = aliasEntries[index];
+    if (!entry) return;
+    const lines = entry.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (!lines.length) {
+      aliasStatus.textContent = `エイリアス「${entry.name}」の中身が空です。`;
+      return;
+    }
+    if (button) button.disabled = true;
+    const selectedTab = selectedTabIndex;
+    try {
+      for (const line of lines) {
+        await sendRequest('CCFOLIA_CHAT_SEND', {
+          text: line,
+          ...(selectedTab !== null && selectedTab !== '' ? { tabIndex: Number(selectedTab) } : {})
+        });
+      }
+      chatStatus.textContent = `エイリアス「${entry.name}」を送信しました。`;
+      void refreshChatState({ force: false });
+    } catch (reason) {
+      chatStatus.textContent = reason.message;
+    }
+    if (button) button.disabled = false;
+  };
+  const renderAliasEditor = () => {
+    if (aliasEditingIndex >= 0 && !aliasEntries[aliasEditingIndex]) aliasEditingIndex = -1;
+    aliasList.replaceChildren();
+    aliasAddButton.textContent = aliasEditingIndex >= 0 ? '更新' : '追加';
+    aliasCancelButton.hidden = aliasEditingIndex < 0;
+    for (const [index, entry] of aliasEntries.entries()) {
+      const row = document.createElement('li');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = entry.name;
+      button.title = entry.text;
+      button.setAttribute('aria-label', `エイリアス「${entry.name}」を編集`);
+      button.addEventListener('click', () => {
+        aliasEditingIndex = index;
+        aliasNameInput.value = entry.name;
+        aliasTextInput.value = entry.text;
+        renderAliasEditor();
+      });
+      row.append(button);
+      const preview = document.createElement('span');
+      preview.textContent = '（' + entry.text.replace(/\s+/g, ' ').trim().slice(0, 40) + '）';
+      row.append(preview);
+      const deleteButton = document.createElement('button');
+      deleteButton.type = 'button';
+      deleteButton.textContent = '削除';
+      deleteButton.setAttribute('aria-label', `エイリアス「${entry.name}」を削除`);
+      deleteButton.addEventListener('click', () => {
+        aliasEntries.splice(index, 1);
+        saveAliasEntries();
+        if (aliasEditingIndex === index) resetAliasEditor();
+        renderAliasEditor();
+        renderAliasButtons();
+      });
+      row.append(deleteButton);
+      aliasList.append(row);
+    }
+  };
+  const resetAliasEditor = () => {
+    aliasEditingIndex = -1;
+    aliasNameInput.value = '';
+    aliasTextInput.value = '';
+  };
+  aliasAddButton.addEventListener('click', () => {
+    const name = aliasNameInput.value.trim();
+    const text = aliasTextInput.value.replace(/\r?\n/g, '\n');
+    if (!name) {
+      aliasStatus.textContent = 'alias名を入力してください。';
+      return;
+    }
+    if (!text.trim()) {
+      aliasStatus.textContent = 'aliasの内容を入力してください。';
+      return;
+    }
+    const existingIndex = aliasEntries.findIndex((entry) => entry.name === name);
+    if (aliasEditingIndex >= 0 && aliasEntries[aliasEditingIndex]) {
+      aliasEntries[aliasEditingIndex] = { name, text };
+      resetAliasEditor();
+    } else if (existingIndex >= 0) {
+      // 同名のaliasがあるときは上書きします。
+      aliasEntries[existingIndex] = { name, text };
+    } else {
+      aliasEntries.push({ name, text });
+    }
+    saveAliasEntries();
+    aliasStatus.textContent = `alias「${name}」を登録しました。`;
+    renderAliasEditor();
+    resetAliasEditor();
+    renderAliasButtons();
+  });
+  aliasCancelButton.addEventListener('click', () => {
+    resetAliasEditor();
+    renderAliasEditor();
+  });
+
+
   // ステータスコマンド形式（1s-10, 2h20 など）か簡易判定し、候補表示を抑制する。
   const isStatusCommandText = (text) => /^(?:\d+(?:(?:\s*,\s*|\s+)\d+)*)?\s*(hp|mp|san|h|m|s)(\s*)(=|[+-])?(\s*)(\d+)$/i.test(text.trim());
 
@@ -1125,6 +1261,8 @@
   applyFont(readStoredFont());
   renderCharacterChoices();
   renderDiceControls();
+  renderAliasButtons();
+  renderAliasEditor();
   syncCommandMap();
   void refreshChatState({ force: true, includeCharacters: true });
   void syncAutoSkipStatus();
