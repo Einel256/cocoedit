@@ -118,8 +118,11 @@
   };
 
   const acquireCharacters = async () => {
-    const hpRows = findMetricRows(METRICS.hp);
-    if (hpRows.length === 0) throw new Error('キャラクターのHP表示行が見つかりませんでした。');
+    const hpRows = await waitFor(() => {
+      const rows = findMetricRows(METRICS.hp);
+      return rows.length ? rows : null;
+    }, 2000);
+    if (!hpRows?.length) throw new Error('キャラクターのHP表示行が見つかりませんでした。');
     const rawCharacters = [];
     for (let index = 0; index < hpRows.length; index += 1) {
       // 盤面の全DOMを毎キャラクター再走査せず、開始時の一覧を使います。
@@ -128,11 +131,11 @@
         throw new Error('キャラクター情報の取得中に表示が変わりました。もう一度取得してください。');
       }
       target.row.click();
-      await wait(40);
       let name;
       try {
-        const editor = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .MuiDrawer-root, .MuiPopover-root')]
-          .filter(visible).at(-1);
+        const editor = await waitFor(() => [...document.querySelectorAll(
+          '[role="dialog"], [aria-modal="true"], .MuiDrawer-root, .MuiPopover-root'
+        )].filter(visible).at(-1), 1000);
         name = getCharacterName(target, index, editor);
       } finally {
         await clickOutsideEditor(target.row);
@@ -551,7 +554,7 @@
       characterLists = await waitFor(() => {
         const lists = [...document.querySelectorAll(listSelector)].filter(visible);
         return lists.length ? lists : null;
-      }, 400) ?? [];
+      }, 1500) ?? [];
     }
     const characterList = characterLists.at(-1);
     if (characterList) {
