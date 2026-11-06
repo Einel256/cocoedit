@@ -7,18 +7,17 @@
   const error = (...args) => console.error(LOG_PREFIX, ...args);
   let commandMapWrite = Promise.resolve();
 
-  // 拡張機能アイコンから、サイト内ではなく専用の制御ウィンドウを開きます。
-  chrome.action.onClicked.addListener(async () => {
+  // 拡張機能アイコンから、ルームチャット上の拡張チャットを開閉します。
+  chrome.action.onClicked.addListener(async (tab) => {
     try {
-      await chrome.windows.create({
-        url: chrome.runtime.getURL('control.html'),
-        type: 'popup',
-        width: 420,
-        height: 820,
-        focused: true
-      });
+      const roomTab = tab?.url?.startsWith('https://ccfolia.com/rooms/')
+        ? tab
+        : await findRoomTab();
+      if (!roomTab.id) throw new Error('CCFOLIAのルームタブが見つかりません。先にルームを開いてください。');
+      const result = await chrome.tabs.sendMessage(roomTab.id, { type: 'CCFOLIA_CHAT_OVERLAY_TOGGLE' });
+      if (!result?.ok) throw new Error(result?.error || '拡張チャットを開けませんでした。');
     } catch (reason) {
-      error('制御ウィンドウを開けませんでした。', reason);
+      error('拡張チャットを開けませんでした。', reason);
     }
   });
 

@@ -155,9 +155,20 @@ body[data-theme="original"] #chat-status {
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html { background: transparent; }
+html { height: 100%; background: transparent; }
 body { min-width: 360px; margin: 0; color: var(--text); background: var(--surface); font-size: 13px; line-height: 1.45; }
 main { display: flex; flex-direction: column; height: 100vh; min-height: 540px; }
+body[data-embedded="true"] { min-width: 0; height: 100%; overflow: hidden; }
+body[data-embedded="true"] main { position: relative; height: 100%; min-height: 0; }
+body[data-embedded="true"] .window-header { display: none; }
+body[data-embedded="true"] .setup-section[open] {
+  position: absolute;
+  z-index: 30;
+  inset: 0 0 auto;
+  max-height: min(80vh, 620px);
+  overflow-y: auto;
+  box-shadow: 0 8px 20px rgb(0 0 0 / .55);
+}
 
 h1 { margin: 0; font-size: 14px; font-weight: 700; color: #fff; }
 h2 { margin: 4px 10px 6px; font-size: 12px; font-weight: 500; color: #aeb4c0; }

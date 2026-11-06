@@ -1,6 +1,8 @@
 (() => {
   'use strict';
 
+  if (window.self !== window.top) document.body.dataset.embedded = 'true';
+
   const charactersElement = document.getElementById('characters');
   const status = document.getElementById('status');
   const chatStatus = document.getElementById('chat-status');

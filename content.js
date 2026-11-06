@@ -1509,7 +1509,173 @@
     status: autoSkip.lastStatus || (autoSkip.mode ? 'メッセージ自動削除ON（監視中）' : 'メッセージ自動削除OFF（通常動作）')
   });
 
+  const CHAT_OVERLAY_ID = 'ccfolia-expanded-chat-overlay';
+  const CHAT_SELECTOR_ID = 'ccfolia-expanded-chat-selector';
+  let chatOverlayPanel = null;
+  let chatOverlayMode = 'room';
+  let chatOverlayPositionTimer = 0;
+  let chatOverlayResizeObserver = null;
+  let chatOverlayPositionHandler = null;
+
+  const findChatPanel = () => {
+    const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
+    const composer = document.querySelector('textarea[name="text"][placeholder="メッセージを入力"]');
+    if (!logList || !composer) return null;
+
+    for (let ancestor = logList; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+      if (!ancestor.contains(composer)) continue;
+      if (ancestor.matches('.MuiDrawer-paper, [role="dialog"], [aria-modal="true"]')) return ancestor;
+    }
+
+    const ancestors = new Set();
+    for (let ancestor = logList; ancestor; ancestor = ancestor.parentElement) ancestors.add(ancestor);
+    for (let ancestor = composer; ancestor; ancestor = ancestor.parentElement) {
+      if (ancestors.has(ancestor)) return ancestor === document.body ? null : ancestor;
+    }
+    return null;
+  };
+
+  const chatPanelIsVisible = (panel) => {
+    if (!panel || !visible(panel)) return false;
+    const rect = panel.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0
+      && rect.right > 0 && rect.bottom > 0
+      && rect.left < window.innerWidth && rect.top < window.innerHeight;
+  };
+
+  const closeChatOverlay = () => {
+    window.clearInterval(chatOverlayPositionTimer);
+    chatOverlayPositionTimer = 0;
+    chatOverlayResizeObserver?.disconnect();
+    chatOverlayResizeObserver = null;
+    if (chatOverlayPositionHandler) {
+      window.removeEventListener('resize', chatOverlayPositionHandler);
+      window.removeEventListener('scroll', chatOverlayPositionHandler, true);
+      chatOverlayPositionHandler = null;
+    }
+    document.getElementById(CHAT_OVERLAY_ID)?.remove();
+    chatOverlayPanel = null;
+  };
+
+  const openChatOverlay = async () => {
+    let panel = findChatPanel();
+    if (panel && !chatPanelIsVisible(panel)) {
+      const openButton = chatDrawerOpenButton();
+      if (openButton) {
+        openButton.click();
+        await wait(180);
+        panel = findChatPanel();
+      }
+    }
+    closeChatOverlay();
+    chatOverlayPanel = chatPanelIsVisible(panel) ? panel : null;
+
+    const host = document.createElement('div');
+    host.id = CHAT_OVERLAY_ID;
+    host.style.cssText = 'position:fixed;z-index:2147483646;pointer-events:auto;';
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `
+      <style>
+        :host { display: block; width: 100%; height: 100%; pointer-events: auto; }
+        iframe { display: block; width: 100%; height: 100%; border: 0; background: #191c24; pointer-events: auto; }
+      </style>
+      <iframe title="拡張チャット" src="${chrome.runtime.getURL('control.html?embedded=1')}"></iframe>`;
+    const positionChatOverlay = () => {
+      if (chatOverlayPanel?.isConnected && chatPanelIsVisible(chatOverlayPanel)) {
+        const rect = chatOverlayPanel.getBoundingClientRect();
+        host.hidden = false;
+        host.style.left = `${Math.round(rect.left)}px`;
+        host.style.top = `${Math.round(rect.top)}px`;
+        host.style.width = `${Math.round(rect.width)}px`;
+        host.style.height = `${Math.round(rect.height)}px`;
+      } else {
+        host.hidden = false;
+        host.style.left = 'auto';
+        host.style.top = 'auto';
+        host.style.right = '20px';
+        host.style.bottom = '20px';
+        host.style.width = 'min(440px, calc(100vw - 40px))';
+        host.style.height = 'min(78vh, 720px)';
+      }
+    };
+    document.body.append(host);
+    positionChatOverlay();
+    chatOverlayPositionHandler = positionChatOverlay;
+    if (chatOverlayPanel) {
+      chatOverlayResizeObserver = new ResizeObserver(positionChatOverlay);
+      chatOverlayResizeObserver.observe(chatOverlayPanel);
+    }
+    window.addEventListener('resize', chatOverlayPositionHandler);
+    window.addEventListener('scroll', chatOverlayPositionHandler, true);
+    chatOverlayPositionTimer = window.setInterval(positionChatOverlay, 300);
+  };
+
+  const setChatOverlayMode = async (mode) => {
+    chatOverlayMode = mode;
+    for (const button of document.querySelectorAll(`#${CHAT_SELECTOR_ID} button[data-mode]`)) {
+      button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
+    }
+    if (mode === 'room') {
+      closeChatOverlay();
+      return;
+    }
+    if (!document.getElementById(CHAT_OVERLAY_ID)) await openChatOverlay();
+  };
+
+  const installChatOverlaySelector = () => {
+    if (document.getElementById(CHAT_SELECTOR_ID)) return;
+    const host = document.createElement('div');
+    host.id = CHAT_SELECTOR_ID;
+    host.style.cssText = 'position:fixed;top:0;left:50%;z-index:2147483647;width:100vw;transform:translateX(-50%);pointer-events:none;';
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `
+      <style>
+        :host { color-scheme: dark; font: 13px/1.4 "Noto Sans JP", Roboto, system-ui, sans-serif; }
+        .trigger { width: 100%; height: 8px; background: transparent; pointer-events: auto; }
+        .selector { position: absolute; top: 0; left: 50%; display: flex; gap: 6px; padding: 7px; border: 1px solid #444955; border-top: 0; border-radius: 0 0 9px 9px; background: #1d2029; box-shadow: 0 5px 16px rgb(0 0 0 / .5); opacity: 0; pointer-events: none; transform: translate(-50%, calc(-100% + 8px)); transition: opacity .12s ease, transform .16s ease; white-space: nowrap; }
+        :host(:hover) .selector, :host(:focus-within) .selector { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+        button { min-height: 30px; padding: 5px 10px; border: 1px solid #4b505c; border-radius: 6px; background: #292d37; color: #cbd0da; font: inherit; cursor: pointer; }
+        button:hover { background: #363b47; }
+        button[aria-pressed="true"] { border-color: #e6004f; background: #512334; color: #fff; }
+      </style>
+      <div class="trigger" aria-hidden="true"></div>
+      <div class="selector" role="toolbar" aria-label="チャット表示の切り替え">
+        <button type="button" data-mode="room" aria-pressed="true">既存ルームチャット</button>
+        <button type="button" data-mode="expanded" aria-pressed="false">拡張チャット</button>
+      </div>`;
+    shadow.querySelector('.selector').addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-mode]');
+      if (!button) return;
+      setChatOverlayMode(button.dataset.mode).catch((reason) => {
+        chatOverlayMode = 'room';
+        for (const item of shadow.querySelectorAll('button[data-mode]')) {
+          item.setAttribute('aria-pressed', String(item.dataset.mode === 'room'));
+        }
+        const messageText = reason instanceof Error ? reason.message : String(reason);
+        error(messageText);
+      });
+    });
+    document.body.append(host);
+  };
+
+  installChatOverlaySelector();
+
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type === 'CCFOLIA_CHAT_OVERLAY_TOGGLE') {
+      if (document.getElementById(CHAT_OVERLAY_ID)) {
+        setChatOverlayMode('room').catch((reason) => error('ルームチャットへ切り替えられませんでした。', reason));
+        sendResponse({ ok: true });
+        return undefined;
+      }
+      setChatOverlayMode('expanded')
+        .then(() => sendResponse({ ok: true }))
+        .catch((reason) => {
+          const messageText = reason instanceof Error ? reason.message : String(reason);
+          error(messageText);
+          sendResponse({ ok: false, error: messageText });
+        });
+      return true;
+    }
     if (message?.type === 'CCFOLIA_ACQUIRE_CHARACTERS_IN_ROOM') {
       acquireCharacters()
         .then((result) => sendResponse(result))
