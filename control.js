@@ -13,6 +13,7 @@
   const clearMessageButton = document.getElementById('clear-message');
   const composerSpeakerAvatar = document.getElementById('composer-speaker-avatar');
   const composerSpeakerName = document.getElementById('composer-speaker-name');
+  const closeRoomChatButton = document.getElementById('close-room-chat');
   const refreshScanButton = document.getElementById('refresh-scan');
   const openChatPaletteButton = document.getElementById('open-chat-palette');
   const speakerAvatar = document.getElementById('speaker-avatar');
@@ -39,8 +40,10 @@
   const setupSection = document.querySelector('.setup-section');
   const themeSelect = document.getElementById('theme-select');
   const fontSelect = document.getElementById('font-select');
+  const fontSizeSelect = document.getElementById('font-size-select');
   const THEME_STORAGE_KEY = 'ccfolia-theme-v1';
   const FONT_STORAGE_KEY = 'ccfolia-font-v1';
+  const FONT_SIZE_STORAGE_KEY = 'ccfolia-font-size-v1';
   const CHARACTER_STORAGE_KEY = 'ccfolia-status-characters-v1';
   const PALETTE_STORAGE_KEY = 'ccfolia-chat-palette-v1';
   const ALIAS_STORAGE_KEY = 'ccfolia-alias-v1';
@@ -77,25 +80,59 @@
     applyTheme(event.target.value);
   });
 
-  // フォント選択。JetBrainsMonoNF-Regular（11pt）に切り替えられるようにします。
+  const fontStacks = {
+    'NotoSansCJK-Regular': '"NotoSansCJK-Regular", "Noto Sans CJK JP", "Noto Sans JP", sans-serif',
+    'JetBrainsMonoNF-Regular': '"JetBrainsMonoNF-Regular", "JetBrainsMono NF", "JetBrains Mono NF", monospace',
+    'しねきゃぷしょん': '"しねきゃぷしょん", "cinecaption", "CineCaption", serif'
+  };
+  const supportedFonts = new Set(['default', ...Object.keys(fontStacks)]);
+  const legacyFontFamilies = {
+    noto: 'NotoSansCJK-Regular',
+    'Noto Sans JP': 'NotoSansCJK-Regular',
+    jetbrains: 'JetBrainsMonoNF-Regular',
+    'JetBrains Mono NF': 'JetBrainsMonoNF-Regular',
+    cinecaption: 'しねきゃぷしょん'
+  };
   const readStoredFont = () => {
     try {
       const stored = localStorage.getItem(FONT_STORAGE_KEY);
-      return stored === 'jetbrains' || stored === 'default' ? stored : 'default';
+      if (!stored) return 'default';
+      const font = legacyFontFamilies[stored] ?? stored;
+      return supportedFonts.has(font) ? font : 'default';
     } catch {
       return 'default';
     }
   };
+  let selectedFontFamily = readStoredFont();
   const applyFont = (font) => {
-    const value = font === 'jetbrains' ? 'jetbrains' : 'default';
-    if (value === 'jetbrains') document.body.setAttribute('data-font', 'jetbrains');
-    else document.body.removeAttribute('data-font');
-    if (fontSelect) fontSelect.value = value;
-    localStorage.setItem(FONT_STORAGE_KEY, value);
+    selectedFontFamily = supportedFonts.has(font) ? font : 'default';
+    if (selectedFontFamily === 'default') {
+      document.documentElement.style.removeProperty('--font-family-base');
+    } else {
+      document.documentElement.style.setProperty('--font-family-base', fontStacks[selectedFontFamily]);
+    }
+    fontSelect.value = selectedFontFamily;
+    localStorage.setItem(FONT_STORAGE_KEY, selectedFontFamily);
   };
   fontSelect?.addEventListener('change', (event) => {
     applyFont(event.target.value);
   });
+  applyFont(selectedFontFamily);
+  const readStoredFontSize = () => {
+    try {
+      const size = Number(localStorage.getItem(FONT_SIZE_STORAGE_KEY));
+      return Number.isInteger(size) && size >= 10 && size <= 24 ? size : 13;
+    } catch {
+      return 13;
+    }
+  };
+  const applyFontSize = (size) => {
+    const value = Math.min(24, Math.max(10, Math.round(Number(size) || 13)));
+    document.documentElement.style.setProperty('--font-size-base', `${value}px`);
+    fontSizeSelect.value = String(value);
+    localStorage.setItem(FONT_SIZE_STORAGE_KEY, String(value));
+  };
+  fontSizeSelect?.addEventListener('change', (event) => applyFontSize(event.target.value));
 
   let acquiredCharacters = readStoredCharacters();
   let latestChatState = null;
@@ -690,8 +727,7 @@
   };
 
   // --- エイリアス ---
-  // 設定画面で登録した内容を1クリックで送るボタン列。内容が複数行のときは
-  // 上の行から順に1行ずつ送ります（送信はCCFOLIA側の変換・ステータスコマンドと同じ経路）。
+  // 設定画面で登録した内容をメッセージ入力欄へ入れるボタン列です。
   let aliasEntries = (() => {
     try {
       const stored = JSON.parse(localStorage.getItem(ALIAS_STORAGE_KEY) || 'null');
@@ -716,9 +752,8 @@
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = entry.name;
-      button.title = entry.text.replace(/\n/g, ' / ');
-      button.setAttribute('aria-label', `エイリアス「${entry.name}」を送信`);
-      button.addEventListener('click', () => void runAliasEntry(index, button));
+      button.setAttribute('aria-label', `エイリアス「${entry.name}」を入力欄に入力`);
+      button.addEventListener('click', () => runAliasEntry(index));
       aliasButtons.append(button);
     }
   };
@@ -740,29 +775,13 @@
     localStorage.setItem(ALIAS_BUTTONS_VISIBLE_KEY, JSON.stringify(aliasButtonsVisible));
     applyAliasButtonsVisibility();
   });
-  const runAliasEntry = async (index, button) => {
+  const runAliasEntry = (index) => {
     const entry = aliasEntries[index];
     if (!entry) return;
-    const lines = entry.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    if (!lines.length) {
-      aliasStatus.textContent = `エイリアス「${entry.name}」の中身が空です。`;
-      return;
-    }
-    if (button) button.disabled = true;
-    const selectedTab = selectedTabIndex;
-    try {
-      for (const line of lines) {
-        await sendRequest('CCFOLIA_CHAT_SEND', {
-          text: line,
-          ...(selectedTab !== null && selectedTab !== '' ? { tabIndex: Number(selectedTab) } : {})
-        });
-      }
-      chatStatus.textContent = `エイリアス「${entry.name}」を送信しました。`;
-      void refreshChatState({ force: false });
-    } catch (reason) {
-      chatStatus.textContent = reason.message;
-    }
-    if (button) button.disabled = false;
+    chatInput.value = entry.text;
+    hideCommandSuggestions();
+    chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    chatInput.focus();
   };
   const renderAliasEditor = () => {
     if (aliasEditingIndex >= 0 && !aliasEntries[aliasEditingIndex]) aliasEditingIndex = -1;
@@ -945,7 +964,7 @@
   };
 
   /* /m /g /c /s /a コマンド。fzf風のTab補完で選択します。
-     /m = チャットタブ移動 /g = 技能選択（チャットパレット） /c = キャラ選択 /s = シーン選択 /a = alias送信 */
+     /m = チャットタブ移動 /g = 技能選択（チャットパレット） /c = キャラ選択 /s = シーン選択 /a = aliasを入力欄に挿入 */
   const commandSuggestions = document.getElementById('command-suggestions');
   let commandMode = null; // 'm' | 'g' | 'c' | 's' | 'a'
   let commandMatches = [];
@@ -972,7 +991,7 @@
       return sceneEntries.map((entry) => ({ label: entry, value: `/scene ${entry}` }));
     }
     if (mode === 'a') {
-      // aliasは名前で選択すると、その実行（内容が複数行なら上から順に送信）をします。
+      // aliasは名前で選択すると内容を入力欄へ入れます。
       return aliasEntries.map((entry, index) => ({ label: entry.name, title: entry.name + '：' + entry.text.replace(/\n/g, ' / '), aliasIndex: index }));
     }
     return (latestChatState?.characters ?? [])
@@ -1091,12 +1110,9 @@
     }
     const selected = commandMatches[commandIndex];
     if (commandMode === 'a') {
-      // aliasを選択したら、その内容を送ります（ボタンを押したときと同じ挙動です）。
-      chatInput.value = '';
+      // aliasは内容を入力欄へ入れるだけで、送信しません。
       hideCommandSuggestions();
-      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-      chatInput.focus();
-      await runAliasEntry(selected.aliasIndex);
+      runAliasEntry(selected.aliasIndex);
       return;
     }
     if (commandMode === 'g') {
@@ -1175,6 +1191,20 @@
       if (!latestChatState) chatStatus.textContent = reason instanceof Error ? reason.message : String(reason);
     }
   };
+
+  closeRoomChatButton.addEventListener('click', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    closeRoomChatButton.disabled = true;
+    try {
+      await sendRequest('CCFOLIA_CHAT_CLOSE_DRAWER');
+      chatStatus.textContent = 'ルームチャットを閉じました。';
+    } catch (reason) {
+      chatStatus.textContent = reason.message;
+    } finally {
+      closeRoomChatButton.disabled = false;
+    }
+  });
 
   const storeAcquiredCharacters = (characters) => {
     const previousCharacters = acquiredCharacters ?? [];
@@ -1500,6 +1530,7 @@
 
   applyTheme(readStoredTheme());
   applyFont(readStoredFont());
+  applyFontSize(readStoredFontSize());
   renderCharacterChoices();
   renderDiceControls();
   renderAliasButtons();

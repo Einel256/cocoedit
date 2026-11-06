@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  font-family: "Noto Sans JP", Roboto, "Hiragino Sans", system-ui, sans-serif;
+  font-family: var(--font-family-base, "Noto Sans JP", Roboto, "Hiragino Sans", system-ui, sans-serif);
   --text: #e8eaf0;
   --muted: #8a91a0;
   --line: rgb(255 255 255 / .08);
@@ -8,6 +8,22 @@
   --panel: rgb(31 35 45);
   --surface: rgb(26 29 37);
   --accent: #e6004f;
+}
+
+@font-face {
+  font-family: "NotoSansCJK-Regular";
+  src: local("NotoSansCJK-Regular"), local("Noto Sans CJK JP"), local("Noto Sans JP");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "JetBrainsMonoNF-Regular";
+  src: local("JetBrainsMonoNF-Regular"), local("JetBrainsMono NF"), local("JetBrains Mono NF");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "しねきゃぷしょん";
+  src: local("しねきゃぷしょん"), local("cinecaption"), local("CineCaption");
+  font-weight: 400;
 }
 
 body[data-theme="original"] {
@@ -154,12 +170,13 @@ body[data-theme="original"] #chat-status {
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html { height: 100%; background: transparent; }
-body { min-width: 360px; margin: 0; color: var(--text); background: var(--surface); font-size: 13px; line-height: 1.45; }
+html { height: 100%; background: transparent; font-size: var(--font-size-base, 13px); }
+body { min-width: 360px; margin: 0; color: var(--text); background: var(--surface); font-family: var(--font-family-base, "Noto Sans JP", Roboto, "Hiragino Sans", system-ui, sans-serif); font-size: 1rem; line-height: 1.45; }
 main { display: flex; flex-direction: column; height: 100vh; min-height: 540px; }
 body[data-embedded="true"] { min-width: 0; height: 100%; overflow: hidden; }
 body[data-embedded="true"] main { position: relative; height: 100%; min-height: 0; }
-body[data-embedded="true"] .window-header { display: none; }
+body[data-embedded="true"] .window-header { position: absolute; z-index: 31; top: 0; right: 0; display: block; width: 34px; height: 30px; padding: 0; border: 0; background: transparent; }
+body[data-embedded="true"] .window-header h1 { display: none; }
 body[data-embedded="true"] .setup-section[open] {
   position: absolute;
   z-index: 30;
@@ -169,8 +186,8 @@ body[data-embedded="true"] .setup-section[open] {
   box-shadow: 0 8px 20px rgb(0 0 0 / .55);
 }
 
-h1 { margin: 0; font-size: 14px; font-weight: 700; color: #fff; }
-h2 { margin: 4px 10px 6px; font-size: 12px; font-weight: 500; color: #aeb4c0; }
+h1 { margin: 0; font-size: 1.077rem; font-weight: 700; color: #fff; }
+h2 { margin: 4px 10px 6px; font-size: .923rem; font-weight: 500; color: #aeb4c0; }
 button, input, select, textarea { font: inherit; }
 button { padding: 6px 10px; color: var(--text); border: 1px solid rgb(255 255 255 / .14); border-radius: 6px; background: rgb(40 44 55); cursor: pointer; }
 button:hover:not(:disabled) { background: rgb(54 59 73); }
@@ -185,6 +202,13 @@ input, select, textarea { min-width: 0; padding: 6px 9px; color: var(--text); bo
 #toggle-settings svg { width: 18px; height: 18px; fill: currentColor; }
 #toggle-settings:hover { background: rgb(255 255 255 / .08); }
 #toggle-settings[aria-expanded="true"] { color: #fff; }
+#close-room-chat { flex: 0 0 22px; display: grid; width: 22px; height: 22px; place-items: center; padding: 0; border: none; border-radius: 5px; background: transparent; color: #b7bdc9; }
+#close-room-chat svg { width: 12px; height: 12px; fill: currentColor; }
+#close-room-chat:hover:not(:disabled) { background: rgb(255 255 255 / .08); }
+body[data-embedded="true"] #toggle-settings { right: 4px; }
+body[data-embedded="true"] .setup-section summary { min-height: 34px; padding: 6px 8px; }
+body[data-embedded="true"] .setup-section summary::before,
+body[data-embedded="true"] .setup-section summary .setup-title { display: none; }
 
 /* 設定・キャラクター情報 */
 .setup-section { flex: 0 0 auto; background: rgb(22 25 32); border-bottom: 1px solid var(--line); }
@@ -193,19 +217,27 @@ input, select, textarea { min-width: 0; padding: 6px 9px; color: var(--text); bo
 .setup-section summary::before { content: ""; display: inline-block; width: 0; height: 0; border: 4.5px solid transparent; border-left-color: currentColor; translate: 0 1px; rotate: 0deg; transition: rotate .15s ease; }
 .setup-section[open] summary::before { rotate: 90deg; }
 .setup-section summary:hover { color: #fff; }
+.theme-section { display: grid; gap: 7px; margin: 0 10px 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.theme-setting-row { display: grid; align-items: center; gap: 8px; min-width: 0; }
+.theme-choice-row { grid-template-columns: 72px minmax(0, 1fr); }
+.font-choice-row { grid-template-columns: 72px minmax(0, 1fr); }
+.font-size-row { grid-template-columns: 72px minmax(0, 1fr); }
+.theme-setting-row label { color: #cdd2db; }
+.theme-setting-row select { width: 100%; }
+.font-size-row select { width: 100%; }
 .skip-automation { margin: 0 10px 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 .skip-automation label { color: #9aa1ad; }
 #auto-skip-interval { width: 78px; padding: 4px 6px; }
 #auto-delete-toggle { min-height: 29px; padding: 4px 12px; border-radius: 999px; }
 #auto-delete-toggle[aria-pressed="true"] { border-color: rgb(230 0 79 / .55); background: rgb(230 0 79 / .28); }
-.skip-automation #skip-status { flex: 1 0 100%; margin: 0; color: #9aa1ad; font-size: 11px; }
+.skip-automation #skip-status { flex: 1 0 100%; margin: 0; color: #9aa1ad; font-size: .846rem; }
 #characters { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; max-height: 180px; overflow: auto; margin: 8px 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); scrollbar-width: thin; scrollbar-color: #454c5c transparent; }
 .character-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 .character-name { min-width: 0; overflow-wrap: anywhere; color: #e0e3ea; }
 .character-number { width: 64px; padding: 4px 6px; }
 output { display: block; min-height: 18px; color: #d7dbe2; }
 #status { margin: 0 10px 6px; }
-small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 11px; }
+small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: .846rem; }
 
 /* チャット（上: ログ、下: 入力欄の並び） */
 .chat-section { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; gap: 6px; padding: 4px 10px 10px; position: relative; }
@@ -214,16 +246,16 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 .message-avatar, .message-avatar-placeholder { flex: 0 0 36px; width: 36px; height: 36px; border-radius: 6px; object-fit: cover; background: rgb(52 57 70); }
 .message-content { flex: 1; min-width: 0; }
 .message-header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
-.message-header strong { color: #888; font-size: 13px; font-weight: 500; }
-.message-header small { margin: 0; color: #6d7484; font-size: 10px; }
-.message-content p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #dcdfe6; font-size: 13px; line-height: 1.55; }
+.message-header strong { color: #888; font-size: 1rem; font-weight: 500; }
+.message-header small { margin: 0; color: #6d7484; font-size: .769rem; }
+.message-content p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #dcdfe6; font-size: 1rem; line-height: 1.55; }
 /* チャットタブ（CCFOLIA風のボタン列。未読は赤い●） */
 .chat-toolbar { display: flex; align-items: center; gap: 6px; padding-top: 2px; }
 .chat-tabs { position: relative; flex: 1 1 auto; display: flex; align-items: flex-end; gap: 2px; min-width: 0; overflow-x: auto; padding: 2px 2px 0; scrollbar-width: none; }
 /* 選択中タブの赤い下線。スライドして移動するので、静止の罫線は付けません。 */
 .chat-tabs::after { content: ""; position: absolute; bottom: 0; left: var(--chat-tab-indicator-left, 0); width: var(--chat-tab-indicator-width, 0); height: 3px; border-radius: 3px; background: var(--accent); transition: left .18s ease, width .18s ease; pointer-events: none; }
 .chat-tabs::-webkit-scrollbar { display: none; }
-.chat-tab { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; margin: 0; padding: 6px 9px; border: none; border-radius: 6px 6px 0 0; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; white-space: nowrap; }
+.chat-tab { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; margin: 0; padding: 6px 9px; border: none; border-radius: 6px 6px 0 0; background: transparent; color: var(--muted); font-size: .846rem; cursor: pointer; white-space: nowrap; }
 .chat-tab:hover:not(.is-selected) { color: var(--text); }
 .chat-tab.is-selected { color: #fff; font-weight: 600; }
 .chat-tab.has-unread { color: var(--text); font-weight: 600; }
@@ -232,7 +264,7 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 
 /* 発言者行 */
 .speaker-row { display: flex; align-items: center; gap: 6px; min-height: 46px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
-.speaker-row label { color: #8a91a0; font-size: 11px; white-space: nowrap; }
+.speaker-row label { color: #8a91a0; font-size: .846rem; white-space: nowrap; }
 .speaker-avatar { flex: 0 0 30px; width: 30px; height: 30px; border-radius: 6px; object-fit: cover; background: rgb(52 57 70); }
 .speaker-row input { flex: 1 1 auto; width: 60px; padding: 5px 8px; }
 .speaker-row select { flex: 1 1 auto; min-width: 120px; padding: 5px 6px; }
@@ -257,53 +289,53 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
   overflow: hidden;
 }
 .chat-palette-toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
-.chat-palette-toolbar strong { flex: 0 0 auto; font-size: 12px; font-weight: 500; }
+.chat-palette-toolbar strong { flex: 0 0 auto; font-size: .923rem; font-weight: 500; }
 /* パレット下部の再取得・閉じるボタン */
 .chat-palette-footer { display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--line); }
 .chat-palette-footer button { min-width: 64px; padding: 5px 10px; }
 .chat-palette-items { display: flex; flex: 1 1 auto; flex-direction: column; gap: 3px; min-height: 0; overflow: auto; margin: 0; padding: 6px 10px; list-style: none; scrollbar-width: thin; scrollbar-color: #454c5c transparent; }
-.chat-palette-items button { overflow: hidden; width: 100%; padding: 8px 10px; text-align: left; text-overflow: ellipsis; white-space: nowrap; border-radius: 6px; font-size: 13.5px; }
-#chat-palette-status { flex: 0 0 auto; min-height: 16px; margin: 0; padding: 2px 10px 6px; color: #8a91a0; font-size: 11px; }
+.chat-palette-items button { overflow: hidden; width: 100%; padding: 8px 10px; text-align: left; text-overflow: ellipsis; white-space: nowrap; border-radius: 6px; font-size: 1.038rem; }
+#chat-palette-status { flex: 0 0 auto; min-height: 16px; margin: 0; padding: 2px 10px 6px; color: #8a91a0; font-size: .846rem; }
 
 /* ダイス（横一列のコンパクトな並び） */
 .dice-shortcuts { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 4px; padding: 2px 0; }
-.dice-shortcuts button { min-width: 0; min-height: 24px; padding: 2px 0; border: 1px solid rgb(255 255 255 / .16); border-radius: 999px; background: rgb(38 42 53); color: #e8eaf0; font-size: 11.5px; }
+.dice-shortcuts button { min-width: 0; min-height: 24px; padding: 2px 0; border: 1px solid rgb(255 255 255 / .16); border-radius: 999px; background: rgb(38 42 53); color: #e8eaf0; font-size: .885rem; }
 .dice-shortcuts button:hover:not(:disabled) { border-color: rgb(255 255 255 / .3); background: rgb(52 57 70); }
 
 /* エイリアス（押すと登録した内容を送るボタン列。中身の有無で列ごと出し分けます） */
 .alias-buttons { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0; }
 .alias-buttons:empty, .alias-buttons[hidden] { display: none; }
-.alias-buttons button { min-width: 0; min-height: 24px; padding: 2px 10px; overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--accent); border-radius: 999px; background: color-mix(in srgb, var(--accent) 18%, rgb(38 42 53)); color: #fff; font-size: 11.5px; font-weight: 600; }
+.alias-buttons button { min-width: 0; min-height: 24px; padding: 2px 10px; overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--accent); border-radius: 999px; background: color-mix(in srgb, var(--accent) 18%, rgb(38 42 53)); color: #fff; font-size: .885rem; font-weight: 600; }
 .alias-buttons button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 30%, rgb(38 42 53)); border-color: var(--accent); }
 .alias-buttons button:disabled { opacity: .55; }
 
 /* エイリアス設定（設定・キャラクター情報内のエディタ） */
 .alias-settings { margin: 0 10px 8px; display: grid; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
-.alias-settings > .alias-editor:first-of-type { gap: 10px; color: #cdd2db; font-size: 12px; }
+.alias-settings > .alias-editor:first-of-type { gap: 10px; color: #cdd2db; font-size: .923rem; }
 .alias-editor { display: flex; align-items: center; gap: 6px; }
 .alias-editor label { flex: 0 0 auto; color: #9aa1ad; }
-.alias-editor input { flex: 1 1 auto; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: rgb(255 255 255 / .05); color: var(--text); padding: 4px 8px; font-size: 12.5px; }
-#alias-buttons-toggle { margin-left: auto; min-height: 24px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: #9aa1ad; font-size: 11.5px; }
+.alias-editor input { flex: 1 1 auto; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: rgb(255 255 255 / .05); color: var(--text); padding: 4px 8px; font-size: .962rem; }
+#alias-buttons-toggle { margin-left: auto; min-height: 24px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: #9aa1ad; font-size: .885rem; }
 #alias-buttons-toggle[aria-pressed="true"] { border-color: var(--accent); color: #fff; background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .alias-editor button, .alias-list li > button.alias-delete { flex: 0 0 auto; }
-#alias-add { min-height: 26px; padding: 3px 12px; border: none; border-radius: 6px; background: var(--accent); color: #fff; font-size: 12.5px; font-weight: 600; }
+#alias-add { min-height: 26px; padding: 3px 12px; border: none; border-radius: 6px; background: var(--accent); color: #fff; font-size: .962rem; font-weight: 600; }
 #alias-add:hover { filter: brightness(1.15); }
-.alias-settings > textarea { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: rgb(255 255 255 / .05); color: var(--text); resize: vertical; font-size: 12.5px; line-height: 1.45; }
+.alias-settings > textarea { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: rgb(255 255 255 / .05); color: var(--text); resize: vertical; font-size: .962rem; line-height: 1.45; }
 .alias-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .alias-list li { display: flex; align-items: center; gap: 6px; }
-.alias-list li > button:first-child { flex: 0 0 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: rgb(255 255 255 / .06); color: var(--text); font-size: 12px; }
+.alias-list li > button:first-child { flex: 0 0 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: rgb(255 255 255 / .06); color: var(--text); font-size: .923rem; }
 .alias-list li > button:first-child:hover { border-color: rgb(255 255 255 / .3); }
-.alias-list li > span { flex: 1 1 auto; overflow: hidden; color: #8a91a0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.alias-list li > button:last-child { flex: 0 0 auto; min-height: 22px; padding: 2px 8px; border: none; border-radius: 6px; background: transparent; color: #9aa1ad; font-size: 11.5px; }
+.alias-list li > span { flex: 1 1 auto; overflow: hidden; color: #8a91a0; font-size: .846rem; text-overflow: ellipsis; white-space: nowrap; }
+.alias-list li > button:last-child { flex: 0 0 auto; min-height: 22px; padding: 2px 8px; border: none; border-radius: 6px; background: transparent; color: #9aa1ad; font-size: .885rem; }
 .alias-list li > button:last-child:hover { color: #ff9aa2; }
 /* aliasごとのボタン列表示切替・順番入替ボタン */
-.alias-list li > .alias-visibility { flex: 0 0 auto; min-height: 22px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: #9aa1ad; font-size: 11px; white-space: nowrap; }
+.alias-list li > .alias-visibility { flex: 0 0 auto; min-height: 22px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: #9aa1ad; font-size: .846rem; white-space: nowrap; }
 .alias-list li > .alias-visibility[aria-pressed="true"] { border-color: var(--accent); color: #fff; background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .alias-list li > .alias-visibility:hover { color: #cfd3db; }
-.alias-list li > .alias-reorder { flex: 0 0 auto; min-width: 22px; min-height: 22px; padding: 0 4px; border: 1px solid var(--line); border-radius: 6px; background: rgb(255 255 255 / .04); color: #9aa1ad; font-size: 11px; line-height: 1; }
+.alias-list li > .alias-reorder { flex: 0 0 auto; min-width: 22px; min-height: 22px; padding: 0 4px; border: 1px solid var(--line); border-radius: 6px; background: rgb(255 255 255 / .04); color: #9aa1ad; font-size: .846rem; line-height: 1; }
 .alias-list li > .alias-reorder:hover:not(:disabled) { color: #fff; border-color: rgb(255 255 255 / .3); }
 .alias-list li > .alias-reorder:disabled { opacity: .35; cursor: default; }
-#alias-status { min-height: 14px; margin: 0; color: #8a91a0; font-size: 11px; }
+#alias-status { min-height: 14px; margin: 0; color: #8a91a0; font-size: .846rem; }
 .alias-editor #alias-cancel { background: transparent; color: #9aa1ad; font-weight: 500; }
 #alias-cancel:hover { color: #fff; }
 
@@ -334,7 +366,7 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
   background: transparent;
   border: none;
   cursor: pointer;
-  font-size: 13.5px;
+  font-size: 1.038rem;
 }
 .skill-suggestion-item.is-highlighted { background: rgb(255 255 255 / .1); }
 .skill-suggestion-item:hover, .skill-suggestion-item:focus-visible {
@@ -342,28 +374,19 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
   outline: 2px solid rgb(255 255 255 / .35);
   outline-offset: -1px;
 }
-.suggestion-empty { display: block; padding: 6px 10px; color: var(--muted); font-size: 12px; cursor: default; }
-#chat-input { grid-column: 1 / -1; grid-row: 2; width: 100%; min-height: 84px; padding: 9px 11px; resize: vertical; border: none; border-radius: 8px; background: rgb(255 255 255 / .04); font-size: 13.5px; line-height: 1.5; }
+.suggestion-empty { display: block; padding: 6px 10px; color: var(--muted); font-size: .923rem; cursor: default; }
+#chat-input { grid-column: 1 / -1; grid-row: 2; width: 100%; min-height: 84px; padding: 9px 11px; resize: vertical; border: none; border-radius: 8px; background: rgb(255 255 255 / .04); font-size: 1.038rem; line-height: 1.5; }
 #chat-input:focus-visible { outline: none; background: rgb(255 255 255 / .06); }
-#clear-message, #send-message { grid-row: 1; min-height: 32px; padding: 5px 16px; border: 1px solid transparent; border-radius: 7px; font-weight: 600; font-size: 13px; transition: background-color .12s ease, border-color .12s ease, transform .08s ease; }
+#clear-message, #send-message { grid-row: 1; min-height: 32px; padding: 5px 16px; border: 1px solid transparent; border-radius: 7px; font-weight: 600; font-size: 1rem; transition: background-color .12s ease, border-color .12s ease, transform .08s ease; }
 #clear-message { grid-column: 2; }
-#send-message { grid-column: 3; border-color: color-mix(in srgb, var(--accent) 80%, white); background: var(--accent); color: #fff; box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 34%, transparent); }
+#send-message { grid-column: 3; border-color: color-mix(in srgb, var(--accent) 80%, white); background: var(--accent); color: #fff; font-weight: 700; box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 34%, transparent); }
 #clear-message { border-color: var(--line); background: var(--panel); color: var(--text); }
 #clear-message:hover:not(:disabled) { border-color: rgb(255 255 255 / .22); background: rgb(255 255 255 / .12); color: #fff; }
 #send-message:hover:not(:disabled) { border-color: #ff6b95; background: #ff145f; color: #fff; }
 #clear-message:active:not(:disabled), #send-message:active:not(:disabled) { transform: translateY(1px); }
 #send-message:disabled { background: color-mix(in srgb, var(--accent) 50%, #333); }
-#chat-status { min-height: 16px; margin: 0; color: #f0a8b8; font-size: 11px; }
+#chat-status { min-height: 16px; margin: 0; color: #f0a8b8; font-size: .846rem; }
 /* 「誰の名前で入力するか」の表示（入力欄のすぐ下） */
-.composer-speaker { display: flex; align-items: center; gap: 6px; min-height: 16px; padding: 0 2px; color: #a9b0bd; font-size: 11px; }
+.composer-speaker { display: flex; align-items: center; gap: 6px; min-height: 16px; padding: 0 2px; color: #a9b0bd; font-size: .846rem; }
 .composer-speaker-avatar { width: 18px; height: 18px; border-radius: 4px; object-fit: cover; background: rgb(52 57 70); }
 .composer-speaker:empty, .composer-speaker-avatar[hidden] { display: none; }
-
-/* フォント選択: JetBrainsMonoNF-Regular（11pt）。
-   OSにインストールされているフォントのファミリー名が異なる場合は、
-   以下の候補を実際の名前に合わせて調整してください。 */
-body[data-font="jetbrains"] { font-family: "JetBrainsMono NF", "JetBrains Mono NF", "JetBrainsMonoNF-Regular", "JetBrains Mono", ui-monospace, monospace; font-size: 11pt; }
-body[data-font="jetbrains"] button,
-body[data-font="jetbrains"] input,
-body[data-font="jetbrains"] select,
-body[data-font="jetbrains"] textarea { font-family: inherit; }

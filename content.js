@@ -118,11 +118,8 @@
   };
 
   const acquireCharacters = async () => {
-    const hpRows = await waitFor(() => {
-      const rows = findMetricRows(METRICS.hp);
-      return rows.length ? rows : null;
-    }, 2000);
-    if (!hpRows?.length) throw new Error('キャラクターのHP表示行が見つかりませんでした。');
+    const hpRows = findMetricRows(METRICS.hp);
+    if (hpRows.length === 0) throw new Error('キャラクターのHP表示行が見つかりませんでした。');
     const rawCharacters = [];
     for (let index = 0; index < hpRows.length; index += 1) {
       // 盤面の全DOMを毎キャラクター再走査せず、開始時の一覧を使います。
@@ -131,11 +128,11 @@
         throw new Error('キャラクター情報の取得中に表示が変わりました。もう一度取得してください。');
       }
       target.row.click();
+      await wait(40);
       let name;
       try {
-        const editor = await waitFor(() => [...document.querySelectorAll(
-          '[role="dialog"], [aria-modal="true"], .MuiDrawer-root, .MuiPopover-root'
-        )].filter(visible).at(-1), 1000);
+        const editor = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .MuiDrawer-root, .MuiPopover-root')]
+          .filter(visible).at(-1);
         name = getCharacterName(target, index, editor);
       } finally {
         await clickOutsideEditor(target.row);
@@ -337,14 +334,14 @@
   };
 
   // 「resb」コマンド（BCDiceのRESB（抵抗判定）出力に合わせた簡易記法）。
-  // 「r<n>」→ resb、の形で、CCFOLIA側へ「resb」+ n を送ります（例: r5 → resb5）。
+  // 「r<n>」→ resb、の形で、CCFOLIA側へ「resb」+ n を送ります（例: r5 → resb5、r-5 → resb-5）。
   // 「r<n> <m>」→「resb」+（n - m）を送ります（例: r5 3 → resb2）。
-  // 「rg<n>」→「resb」+（n/5 端数切捨て）を送ります（例: rg5 → resb1）。
+  // 「rg<n>」→「resb」+（n/5 端数切捨て）を送ります（例: rg5 → resb1、rg-5 → resb-1）。
   // 「rg<n> <m>」→「resb」+（n/5 端数切捨て - m/5 端数切捨て）を送ります（例: rg10 4 → resb2）。
   // 最初に「s」を付けると、出力は「sresb…」になり、CCFOLIA側でシークレットダイス扱いになります。
   // （例: sr5 3 → sresb2、srg10 4 → sresb2）
   // 区切りはスペース・カンマ・ハイフン（r5-3 / rg10-4）のどれでも使えます。
-  // n と m はいずれも自然数です。行単位で複数書けます（1行1コマンド）。
+  // n と m はいずれも0以外の整数です。行単位で複数書けます（1行1コマンド）。
   // 元のコマンド文は送らず、変換後の「sresb…」/「resb…」だけを送ります。
   const normalizeFullWidthDigits = (text) => text.replace(/[！-～]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0));
   const parseResCommandLines = (text) => {
@@ -352,16 +349,18 @@
     if (!lines.length) return null;
     const values = [];
     for (const line of lines) {
-      const match = line.match(/^(s)?(rg?)(\d+)(?:(?:\s*[-,]\s*|\s+)(\d+))?$/i);
+      const match = line.match(/^(s)?(rg?)([+-]?\d+)(?:(?:\s*,\s*|\s+)([+-]?\d+)|\s*-\s*([+-]?\d+))?$/i);
       if (!match) return null;
       const secret = Boolean(match[1]);
       const n = Number(match[3]);
-      const m = match[4] !== undefined ? Number(match[4]) : null;
-      if (n === 0 || n > 999999 || (match[4] !== undefined && (m === 0 || m > 999999))) return null;
+      const mText = match[4] ?? match[5];
+      const m = mText !== undefined ? Number(mText) : null;
+      if (n === 0 || Math.abs(n) > 999999 || (m !== null && (m === 0 || Math.abs(m) > 999999))) return null;
       const isG = match[2].toLowerCase() === 'rg';
+      const divideByFive = (value) => Math.trunc(value / 5);
       const value = m === null
-        ? (isG ? Math.floor(n / 5) : n)
-        : (isG ? Math.floor(n / 5) - Math.floor(m / 5) : n - m);
+        ? (isG ? divideByFive(n) : n)
+        : (isG ? divideByFive(n) - divideByFive(m) : n - m);
       values.push(`${secret ? 's' : ''}resb${value}`);
     }
     return values;
@@ -514,6 +513,16 @@
     }
     return { ok: true };
   };
+  const closeChatDrawer = async () => {
+    if (!chatDrawerIsOpen()) return { ok: true, alreadyClosed: true };
+    const closeButton = chatDrawerCloseButton();
+    if (!closeButton) throw new Error('CCFOLIAのチャットウィンドウを閉じるボタンが見つかりません。');
+    closeButton.click();
+    if (!await waitFor(() => !chatDrawerIsOpen(), 1200)) {
+      throw new Error('CCFOLIAのチャットウィンドウを閉じられませんでした。');
+    }
+    return { ok: true };
+  };
   const withChatDrawer = async (callback, { forceOpen = false, closeAfter = false } = {}) => {
     // The docked CCFOLIA chat form stays mounted when collapsed. Use it directly
     // to avoid opening and closing the drawer for every message.
@@ -554,7 +563,7 @@
       characterLists = await waitFor(() => {
         const lists = [...document.querySelectorAll(listSelector)].filter(visible);
         return lists.length ? lists : null;
-      }, 1500) ?? [];
+      }, 400) ?? [];
     }
     const characterList = characterLists.at(-1);
     if (characterList) {
@@ -1524,8 +1533,13 @@
 
   const CHAT_OVERLAY_ID = 'ccfolia-expanded-chat-overlay';
   const CHAT_SELECTOR_ID = 'ccfolia-expanded-chat-selector';
+  const CHAT_OVERLAY_MODE_KEY = 'ccfoliaChatOverlayMode';
+  const CHAT_OVERLAY_BOUNDS_KEY = 'ccfoliaChatOverlayBounds';
   let chatOverlayPanel = null;
+  let lastChatOverlayBounds = null;
   let chatOverlayMode = 'room';
+  let preferredChatOverlayMode = 'room';
+  let chatOverlaySyncPromise = null;
   let chatOverlayPositionTimer = 0;
   let chatOverlayResizeObserver = null;
   let chatOverlayPositionHandler = null;
@@ -1556,6 +1570,20 @@
       && rect.left < window.innerWidth && rect.top < window.innerHeight;
   };
 
+  const readChatOverlayBounds = (bounds) => {
+    const values = ['left', 'top', 'width', 'height'].map((key) => Number(bounds[key]));
+    if (!values.every(Number.isFinite)) throw new Error('保存された拡張チャットの位置が不正です。');
+    return { left: values[0], top: values[1], width: values[2], height: values[3] };
+  };
+  const saveChatOverlayBounds = (bounds) => {
+    const next = readChatOverlayBounds(bounds);
+    if (JSON.stringify(next) === JSON.stringify(lastChatOverlayBounds)) return next;
+    lastChatOverlayBounds = next;
+    chrome.storage.local.set({ [CHAT_OVERLAY_BOUNDS_KEY]: next })
+      .catch((reason) => error('拡張チャットの位置を保存できませんでした。', reason));
+    return next;
+  };
+
   const closeChatOverlay = () => {
     window.clearInterval(chatOverlayPositionTimer);
     chatOverlayPositionTimer = 0;
@@ -1571,15 +1599,12 @@
   };
 
   const openChatOverlay = async () => {
-    let panel = findChatPanel();
-    if (panel && !chatPanelIsVisible(panel)) {
-      const openButton = chatDrawerOpenButton();
-      if (openButton) {
-        openButton.click();
-        await wait(180);
-        panel = findChatPanel();
-      }
+    const storedBounds = await chrome.storage.local.get(CHAT_OVERLAY_BOUNDS_KEY);
+    const savedBounds = storedBounds[CHAT_OVERLAY_BOUNDS_KEY];
+    if (savedBounds && ['left', 'top', 'width', 'height'].every((key) => Number.isFinite(Number(savedBounds[key])))) {
+      lastChatOverlayBounds = readChatOverlayBounds(savedBounds);
     }
+    const panel = findChatPanel();
     closeChatOverlay();
     chatOverlayPanel = chatPanelIsVisible(panel) ? panel : null;
 
@@ -1594,22 +1619,43 @@
       </style>
       <iframe title="拡張チャット" src="${chrome.runtime.getURL('control.html?embedded=1')}"></iframe>`;
     const positionChatOverlay = () => {
+      if (!chatDrawerIsOpen()) {
+        if (chatOverlayMode === 'expanded') {
+          setChatOverlayMode('room', { remember: false })
+            .catch((reason) => error('ルームチャットの閉じる状態を同期できませんでした。', reason));
+        } else {
+          host.hidden = true;
+        }
+        return;
+      }
+      if (!chatOverlayPanel?.isConnected || !chatPanelIsVisible(chatOverlayPanel)) {
+        const panel = findChatPanel();
+        if (chatPanelIsVisible(panel)) chatOverlayPanel = panel;
+      }
+      let bounds;
       if (chatOverlayPanel?.isConnected && chatPanelIsVisible(chatOverlayPanel)) {
         const rect = chatOverlayPanel.getBoundingClientRect();
-        host.hidden = false;
-        host.style.left = `${Math.round(rect.left)}px`;
-        host.style.top = `${Math.round(rect.top)}px`;
-        host.style.width = `${Math.round(rect.width)}px`;
-        host.style.height = `${Math.round(rect.height)}px`;
+        bounds = saveChatOverlayBounds({
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height
+        });
       } else {
-        host.hidden = false;
-        host.style.left = 'auto';
-        host.style.top = 'auto';
-        host.style.right = '20px';
-        host.style.bottom = '20px';
-        host.style.width = 'min(440px, calc(100vw - 40px))';
-        host.style.height = 'min(78vh, 720px)';
+        bounds = lastChatOverlayBounds ?? saveChatOverlayBounds({
+          left: window.innerWidth - Math.min(440, window.innerWidth - 40) - 20,
+          top: window.innerHeight - Math.min(720, window.innerHeight * 0.78) - 20,
+          width: Math.min(440, window.innerWidth - 40),
+          height: Math.min(720, window.innerHeight * 0.78)
+        });
       }
+      host.hidden = false;
+      host.style.left = `${bounds.left}px`;
+      host.style.top = `${bounds.top}px`;
+      host.style.right = 'auto';
+      host.style.bottom = 'auto';
+      host.style.width = `${bounds.width}px`;
+      host.style.height = `${bounds.height}px`;
     };
     document.body.append(host);
     positionChatOverlay();
@@ -1623,47 +1669,65 @@
     chatOverlayPositionTimer = window.setInterval(positionChatOverlay, 300);
   };
 
-  const setChatOverlayMode = async (mode) => {
-    chatOverlayMode = mode;
-    for (const button of document.querySelectorAll(`#${CHAT_SELECTOR_ID} button[data-mode]`)) {
-      button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
+  const updateChatOverlayModeLabel = () => {
+    const selectorButton = document.getElementById(CHAT_SELECTOR_ID)?.shadowRoot
+      ?.querySelector('button[data-mode-toggle]');
+    if (selectorButton) selectorButton.textContent = chatOverlayMode === 'expanded' ? '拡張チャット' : 'ルームチャット';
+  };
+  const setChatOverlayMode = async (mode, { remember = true } = {}) => {
+    if (remember) {
+      preferredChatOverlayMode = mode;
+      await chrome.storage.local.set({ [CHAT_OVERLAY_MODE_KEY]: mode });
     }
     if (mode === 'room') {
       closeChatOverlay();
+      chatOverlayMode = 'room';
+      updateChatOverlayModeLabel();
       return;
     }
     if (!document.getElementById(CHAT_OVERLAY_ID)) await openChatOverlay();
+    chatOverlayMode = 'expanded';
+    updateChatOverlayModeLabel();
+  };
+
+  const synchronizeChatOverlayMode = () => {
+    if (chatOverlaySyncPromise) return;
+    chatOverlaySyncPromise = (async () => {
+      if (preferredChatOverlayMode === 'expanded' && chatDrawerIsOpen()) {
+        if (chatOverlayMode !== 'expanded') await setChatOverlayMode('expanded', { remember: false });
+      } else if (chatOverlayMode === 'expanded' && !chatDrawerIsOpen()) {
+        await setChatOverlayMode('room', { remember: false });
+      }
+    })()
+      .catch((reason) => error('チャット表示モードを同期できませんでした。', reason))
+      .finally(() => {
+        chatOverlaySyncPromise = null;
+      });
   };
 
   const installChatOverlaySelector = () => {
     if (document.getElementById(CHAT_SELECTOR_ID)) return;
     const host = document.createElement('div');
     host.id = CHAT_SELECTOR_ID;
-    host.style.cssText = 'position:fixed;top:0;left:50%;z-index:2147483647;width:100vw;transform:translateX(-50%);pointer-events:none;';
+    host.style.cssText = 'position:fixed;top:0;left:50%;z-index:2147483647;transform:translateX(-50%);';
     const shadow = host.attachShadow({ mode: 'open' });
     shadow.innerHTML = `
       <style>
-        :host { color-scheme: dark; font: 13px/1.4 "Noto Sans JP", Roboto, system-ui, sans-serif; }
-        .trigger { width: 100%; height: 8px; background: transparent; pointer-events: auto; }
-        .selector { position: absolute; top: 0; left: 50%; display: flex; gap: 6px; padding: 7px; border: 1px solid #444955; border-top: 0; border-radius: 0 0 9px 9px; background: #1d2029; box-shadow: 0 5px 16px rgb(0 0 0 / .5); opacity: 0; pointer-events: none; transform: translate(-50%, calc(-100% + 8px)); transition: opacity .12s ease, transform .16s ease; white-space: nowrap; }
-        :host(:hover) .selector, :host(:focus-within) .selector { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
-        button { min-height: 30px; padding: 5px 10px; border: 1px solid #4b505c; border-radius: 6px; background: #292d37; color: #cbd0da; font: inherit; cursor: pointer; }
-        button:hover { background: #363b47; }
-        button[aria-pressed="true"] { border-color: #e6004f; background: #512334; color: #fff; }
+        :host { display: block; width: max-content; color-scheme: dark; font: 13px/1.4 "Noto Sans JP", Roboto, system-ui, sans-serif; }
+        .hover-trigger { position: absolute; top: 0; left: 50%; width: 100vw; height: 14px; transform: translateX(-50%); }
+        .selector { position: relative; z-index: 1; display: flex; justify-content: center; padding: 5px 8px 7px; border: 1px solid #555; border-top: 0; border-radius: 0 0 8px 8px; background: #222; box-shadow: 0 3px 8px rgb(0 0 0 / .35); transform: translateY(calc(-100% + 6px)); transition: transform .14s ease; }
+        .selector::after { position: absolute; bottom: 0; left: 50%; width: 32px; height: 3px; border-radius: 3px 3px 0 0; background: #777; content: ""; transform: translate(-50%, 100%); }
+        :host(:hover) .selector, :host(:focus-within) .selector { transform: translateY(0); }
+        button { min-width: 116px; min-height: 30px; padding: 5px 12px; border: 1px solid #666; border-radius: 5px; background: #292929; color: #fff; font: inherit; cursor: pointer; }
+        button:hover { background: #3a3a3a; }
       </style>
-      <div class="trigger" aria-hidden="true"></div>
-      <div class="selector" role="toolbar" aria-label="チャット表示の切り替え">
-        <button type="button" data-mode="room" aria-pressed="true">既存ルームチャット</button>
-        <button type="button" data-mode="expanded" aria-pressed="false">拡張チャット</button>
+      <div class="hover-trigger" aria-hidden="true"></div>
+      <div class="selector">
+        <button type="button" data-mode-toggle aria-label="チャット表示モードを切り替え">ルームチャット</button>
       </div>`;
-    shadow.querySelector('.selector').addEventListener('click', (event) => {
-      const button = event.target.closest('button[data-mode]');
-      if (!button) return;
-      setChatOverlayMode(button.dataset.mode).catch((reason) => {
-        chatOverlayMode = 'room';
-        for (const item of shadow.querySelectorAll('button[data-mode]')) {
-          item.setAttribute('aria-pressed', String(item.dataset.mode === 'room'));
-        }
+    shadow.querySelector('button[data-mode-toggle]').addEventListener('click', () => {
+      const mode = chatOverlayMode === 'expanded' ? 'room' : 'expanded';
+      setChatOverlayMode(mode).catch((reason) => {
         const messageText = reason instanceof Error ? reason.message : String(reason);
         error(messageText);
       });
@@ -1672,6 +1736,19 @@
   };
 
   installChatOverlaySelector();
+  chrome.storage.local.get(CHAT_OVERLAY_MODE_KEY)
+    .then((stored) => {
+      preferredChatOverlayMode = stored[CHAT_OVERLAY_MODE_KEY] === 'expanded' ? 'expanded' : 'room';
+      synchronizeChatOverlayMode();
+    })
+    .catch((reason) => error('保存済みのチャット表示モードを読み込めませんでした。', reason));
+  const chatOverlayModeObserver = new MutationObserver(synchronizeChatOverlayMode);
+  chatOverlayModeObserver.observe(document.body, {
+    attributes: true,
+    childList: true,
+    subtree: true,
+    attributeFilter: ['aria-expanded', 'class', 'style']
+  });
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'CCFOLIA_CHAT_OVERLAY_TOGGLE') {
@@ -1703,6 +1780,12 @@
     }
     if (message?.type === 'CCFOLIA_CHAT_OPEN_DRAWER_IN_ROOM') {
       openChatDrawer()
+        .then((result) => sendResponse(result))
+        .catch((reason) => sendResponse({ ok: false, error: reason instanceof Error ? reason.message : String(reason) }));
+      return true;
+    }
+    if (message?.type === 'CCFOLIA_CHAT_CLOSE_DRAWER_IN_ROOM') {
+      closeChatDrawer()
         .then((result) => sendResponse(result))
         .catch((reason) => sendResponse({ ok: false, error: reason instanceof Error ? reason.message : String(reason) }));
       return true;

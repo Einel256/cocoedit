@@ -15,18 +15,49 @@
         </button>
       </header>
       <details class="setup-section">
-        <summary>設定・キャラクター情報</summary>
+        <summary>
+          <button id="close-room-chat" type="button" aria-label="ルームチャットを閉じる" title="ルームチャットを閉じる">
+            <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 1 8 6 2 11z"/><path d="M10 1v10" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+          <span class="setup-title">設定・キャラクター情報</span>
+        </summary>
         <section class="theme-section" aria-label="テーマ・フォント">
-          <label for="theme-select">テーマ</label>
-          <select id="theme-select">
-            <option value="dark">Dark</option>
-            <option value="original">Original</option>
-          </select>
-          <label for="font-select">フォント</label>
-          <select id="font-select">
-            <option value="default">デフォルト</option>
-            <option value="jetbrains">JetBrains Mono NF（11pt）</option>
-          </select>
+          <div class="theme-setting-row theme-choice-row">
+            <label for="theme-select">テーマ</label>
+            <select id="theme-select">
+              <option value="dark">Dark</option>
+              <option value="original">Original</option>
+            </select>
+          </div>
+          <div class="theme-setting-row font-choice-row">
+            <label for="font-select">フォント</label>
+            <select id="font-select">
+              <option value="default">デフォルト</option>
+              <option value="NotoSansCJK-Regular">NotoSansCJK-Regular</option>
+              <option value="JetBrainsMonoNF-Regular">JetBrainsMonoNF-Regular</option>
+              <option value="しねきゃぷしょん">しねきゃぷしょん</option>
+            </select>
+          </div>
+          <div class="theme-setting-row font-size-row">
+            <label for="font-size-select">サイズ</label>
+            <select id="font-size-select">
+              <option value="10">10px</option>
+              <option value="11">11px</option>
+              <option value="12">12px</option>
+              <option value="13" selected>13px</option>
+              <option value="14">14px</option>
+              <option value="15">15px</option>
+              <option value="16">16px</option>
+              <option value="17">17px</option>
+              <option value="18">18px</option>
+              <option value="19">19px</option>
+              <option value="20">20px</option>
+              <option value="21">21px</option>
+              <option value="22">22px</option>
+              <option value="23">23px</option>
+              <option value="24">24px</option>
+            </select>
+          </div>
         </section>
         <section class="skip-automation" aria-label="メッセージ自動削除">
           <label for="auto-skip-interval">削除までの待ち時間（秒）</label>
