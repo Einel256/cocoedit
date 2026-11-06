@@ -100,8 +100,7 @@ body[data-theme="original"] .message-content p {
   color: #d4d4d4;
 }
 
-/* チャットタブ・更新ボタン */
-body[data-theme="original"] #refresh-chat,
+/* チャットタブ・再取得ボタン */
 body[data-theme="original"] #refresh-scan {
   color: #aaaaaa;
 }
@@ -229,7 +228,7 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 .chat-tab.is-selected { color: #fff; font-weight: 600; }
 .chat-tab.has-unread { color: var(--text); font-weight: 600; }
 .chat-tab-badge { position: absolute; top: 3px; right: 1px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 4px var(--accent); }
-#refresh-chat, #refresh-scan { flex: 0 0 auto; padding: 6px 12px; color: #b7bdc9; }
+#refresh-scan { flex: 0 0 auto; padding: 6px 12px; color: #b7bdc9; }
 
 /* 発言者行 */
 .speaker-row { display: flex; align-items: center; gap: 6px; min-height: 46px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
@@ -346,10 +345,14 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 .suggestion-empty { display: block; padding: 6px 10px; color: var(--muted); font-size: 12px; cursor: default; }
 #chat-input { grid-column: 1 / -1; grid-row: 2; width: 100%; min-height: 84px; padding: 9px 11px; resize: vertical; border: none; border-radius: 8px; background: rgb(255 255 255 / .04); font-size: 13.5px; line-height: 1.5; }
 #chat-input:focus-visible { outline: none; background: rgb(255 255 255 / .06); }
-#clear-message, #send-message { grid-row: 1; min-height: 28px; padding: 4px 12px; border: none; border-radius: 6px; background: transparent; color: var(--muted); font-weight: 500; font-size: 12.5px; }
+#clear-message, #send-message { grid-row: 1; min-height: 32px; padding: 5px 16px; border: 1px solid transparent; border-radius: 7px; font-weight: 600; font-size: 13px; transition: background-color .12s ease, border-color .12s ease, transform .08s ease; }
 #clear-message { grid-column: 2; }
-#send-message { grid-column: 3; }
-#clear-message:hover:not(:disabled), #send-message:hover:not(:disabled) { background: rgb(255 255 255 / .07); color: var(--text); }
+#send-message { grid-column: 3; border-color: color-mix(in srgb, var(--accent) 80%, white); background: var(--accent); color: #fff; box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 34%, transparent); }
+#clear-message { border-color: var(--line); background: var(--panel); color: var(--text); }
+#clear-message:hover:not(:disabled) { border-color: rgb(255 255 255 / .22); background: rgb(255 255 255 / .12); color: #fff; }
+#send-message:hover:not(:disabled) { border-color: #ff6b95; background: #ff145f; color: #fff; }
+#clear-message:active:not(:disabled), #send-message:active:not(:disabled) { transform: translateY(1px); }
+#send-message:disabled { background: color-mix(in srgb, var(--accent) 50%, #333); }
 #chat-status { min-height: 16px; margin: 0; color: #f0a8b8; font-size: 11px; }
 /* 「誰の名前で入力するか」の表示（入力欄のすぐ下） */
 .composer-speaker { display: flex; align-items: center; gap: 6px; min-height: 16px; padding: 0 2px; color: #a9b0bd; font-size: 11px; }

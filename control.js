@@ -13,7 +13,6 @@
   const clearMessageButton = document.getElementById('clear-message');
   const composerSpeakerAvatar = document.getElementById('composer-speaker-avatar');
   const composerSpeakerName = document.getElementById('composer-speaker-name');
-  const refreshChatButton = document.getElementById('refresh-chat');
   const refreshScanButton = document.getElementById('refresh-scan');
   const openChatPaletteButton = document.getElementById('open-chat-palette');
   const speakerAvatar = document.getElementById('speaker-avatar');
@@ -247,6 +246,12 @@
     chatTabs.style.setProperty('--chat-tab-indicator-left', `${selected.offsetLeft}px`);
     chatTabs.style.setProperty('--chat-tab-indicator-width', `${selected.offsetWidth}px`);
   };
+  chatTabs.addEventListener('wheel', (event) => {
+    if (event.deltaX !== 0 || event.deltaY === 0 || chatTabs.scrollWidth <= chatTabs.clientWidth) return;
+    event.preventDefault();
+    chatTabs.scrollLeft -= event.deltaY;
+  }, { passive: false });
+  chatTabs.addEventListener('scroll', updateChatTabIndicator, { passive: true });
   window.addEventListener('resize', updateChatTabIndicator);
 
   // チャットタブはCCFOLIA風のボタン列です。クリックで切り替えます。
@@ -989,7 +994,7 @@
     if (mode === 'g') return '一致する技能がありません。「一括取得」やパレットの「再取得」で取得してください。';
     if (mode === 's') return 'シーン候補がありません。入力欄が空の状態から取得するか、「一括取得」で取得してください。';
     if (mode === 'a') return 'aliasがありません。「設定・キャラクター情報」でaliasを登録してください。';
-    return 'キャラクター候補がありません。「更新」または「一括取得」で候補を取得してください。';
+    return 'キャラクター候補がありません。「再取得」で候補を取得してください。';
   };
 
   const hideCommandSuggestions = () => {
@@ -1186,17 +1191,12 @@
     renderCharacterChoices();
   };
 
-  // 「更新」で、キャラ情報・チャットパレット・シーン・チャットログをまとめて取得します。
-  // パレット・シーンは保存済みのときはCCFOLIA側の再走査を省いて高速化します（個別の再取得は
-  // パレット面板の「再取得」や `/s` からできます）。取得後は、取得のために開いたCCFOLIA側の
-  // パネル（シーン・チャットパレットなど）をすべて閉じ、すっきりした状態に戻します。
-  // force=true（「再取得」ボタン）のときは、保存済みでもパレット・シーンをCCFOLIA側から
+  // 「再取得」で、キャラ情報・チャットパレット・シーン・チャットログをまとめて取得します。
+  // 保存済みでもパレット・シーンをCCFOLIA側から
   // 必ず取り直します。パレットは、全キャラクターぶんを一人ずつ読み込んでキャラごとに保存し、
   // 元の発言者へ戻します（/g や技能パレットは発言者に対応した技能だけを出せるようになります）。
-  // 通常の「更新」は保存済みの再走査を省いて高速です。
-  const updateEverything = async ({ force = false } = {}) => {
-    if (refreshChatButton.disabled || refreshScanButton.disabled) return;
-    refreshChatButton.disabled = true;
+  const updateEverything = async ({ force = true } = {}) => {
+    if (refreshScanButton.disabled) return;
     refreshScanButton.disabled = true;
     openChatPaletteButton.disabled = true;
     refreshChatPaletteButton.disabled = true;
@@ -1285,6 +1285,7 @@
         // 閉じ損ねても処理は続けます（Escapeなど個別の閉じ処理は各取得側でも行っています）。
       }
       await refreshChatState({ force: true, includeCharacters: true });
+      await requestTimeout(sendRequest('CCFOLIA_CHAT_OPEN_DRAWER'), 10, 'チャットウィンドウを開く');
       const paletteText = paletteCount !== null
         ? `、パレット${paletteCharacters && paletteCharacters > 0 ? `${paletteCharacters}キャラ分` : ''}${paletteCount}件`
         : '';
@@ -1293,7 +1294,6 @@
       console.error('[CCFOLIA ステータス変更]', reason);
       status.textContent = reason instanceof Error ? reason.message : String(reason);
     } finally {
-      refreshChatButton.disabled = false;
       refreshScanButton.disabled = false;
       openChatPaletteButton.disabled = false;
       refreshChatPaletteButton.disabled = false;
@@ -1305,7 +1305,6 @@
       }
     }
   };
-  refreshChatButton.addEventListener('click', () => void updateEverything());
   refreshScanButton.addEventListener('click', () => void updateEverything({ force: true }));
 
   charactersElement.addEventListener('change', (event) => {

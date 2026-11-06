@@ -501,6 +501,16 @@
     if (toggle?.hasAttribute('aria-expanded')) return toggle.getAttribute('aria-expanded') === 'true';
     return Boolean(chatDrawerCloseButton());
   };
+  const openChatDrawer = async () => {
+    if (chatDrawerIsOpen()) return { ok: true, alreadyOpen: true };
+    const openButton = chatDrawerOpenButton();
+    if (!openButton) throw new Error('CCFOLIAのチャットウィンドウを開くボタンが見つかりません。');
+    openButton.click();
+    if (!await waitFor(() => chatDrawerIsOpen(), 1200)) {
+      throw new Error('CCFOLIAのチャットウィンドウを開けませんでした。');
+    }
+    return { ok: true };
+  };
   const withChatDrawer = async (callback, { forceOpen = false, closeAfter = false } = {}) => {
     // The docked CCFOLIA chat form stays mounted when collapsed. Use it directly
     // to avoid opening and closing the drawer for every message.
@@ -1684,6 +1694,12 @@
     }
     if (message?.type === 'CCFOLIA_CHAT_GET_STATE_IN_ROOM') {
       getChatState({ force: message.force !== false, includeCharacters: message.includeCharacters === true })
+        .then((result) => sendResponse(result))
+        .catch((reason) => sendResponse({ ok: false, error: reason instanceof Error ? reason.message : String(reason) }));
+      return true;
+    }
+    if (message?.type === 'CCFOLIA_CHAT_OPEN_DRAWER_IN_ROOM') {
+      openChatDrawer()
         .then((result) => sendResponse(result))
         .catch((reason) => sendResponse({ ok: false, error: reason instanceof Error ? reason.message : String(reason) }));
       return true;

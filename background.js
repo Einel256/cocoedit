@@ -69,6 +69,7 @@
     const forwardedTypes = new Set([
       'CCFOLIA_ACQUIRE_CHARACTERS',
       'CCFOLIA_CHAT_GET_STATE',
+      'CCFOLIA_CHAT_OPEN_DRAWER',
       'CCFOLIA_CHAT_SEND',
       'CCFOLIA_CHAT_SELECT_TAB',
       'CCFOLIA_CHAT_SET_SPEAKER',

@@ -33,24 +33,22 @@
           <input id="auto-skip-interval" type="number" min="0.1" max="3600" step="0.1" value="1">
           <button id="auto-delete-toggle" type="button" aria-pressed="false">OFF</button>
           <output id="skip-status" role="status">メッセージ自動削除OFF（通常動作）</output>
-          <small>ONの間は、出てきたメッセージを全スキップし、待ち時間後に閉じます。</small>
         </section>
         <h2>キャラクター情報と番号割り当て</h2>
         <div id="characters" aria-label="キャラクター番号割り当て"></div>
-        <output id="status" role="status">キャラ情報を取得してください。チャット欄の「更新」で、キャラ情報・パレット・シーン・チャットログをまとめて取得します。</output>
-        <small>番号は1〜9です。例: 1s-10、2h20、8m=10　　入力欄からは /m タブ・/g 技能・/c キャラ・/s シーン・/a alias を選べます</small>
+        <output id="status" role="status">キャラ情報未取得</output>
         <section class="alias-settings" aria-label="エイリアス設定">
           <div class="alias-editor">
             <strong>エイリアス（alias）</strong>
-            <button id="alias-buttons-toggle" type="button" aria-pressed="false" title="チャット欄のaliasボタン列の表示を切り替えます（既定は非表示）">ボタン列：非表示</button>
+            <button id="alias-buttons-toggle" type="button" aria-pressed="false">ボタン列：非表示</button>
           </div>
           <div class="alias-editor">
             <label for="alias-name">alias名</label>
-            <input id="alias-name" type="text" placeholder="例: SANチェック" maxlength="20">
+            <input id="alias-name" type="text" placeholder="alias名" maxlength="20">
             <button id="alias-add" type="button">追加</button>
             <button id="alias-cancel" type="button" hidden>やめる</button>
           </div>
-          <textarea id="alias-text" rows="3" placeholder="aliasの内容を入力（複数行。上の行から順に送信されます）例:&#10;CCB<={SAN} 【正気度ロール】&#10;r{SAN}-{純SAN}"></textarea>
+          <textarea id="alias-text" rows="3" placeholder="alias内容"></textarea>
           <ul id="alias-list" class="alias-list" aria-label="登録済みエイリアス"></ul>
           <output id="alias-status" role="status"></output>
         </section>
@@ -60,8 +58,7 @@
         <ol id="chat-log" aria-live="polite"></ol>
         <div class="chat-toolbar">
           <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="チャットタブ"></div>
-          <button id="refresh-scan" type="button" aria-label="キャラ情報・パレット・シーンを再走査" title="キャラ情報・チャットパレット・シーンを保存済みでもCCFOLIA側から取り直します">再取得</button>
-          <button id="refresh-chat" type="button" aria-label="チャットを更新">更新</button>
+          <button id="refresh-scan" type="button" aria-label="キャラ情報・パレット・シーンを再走査">再取得</button>
         </div>
         <div class="speaker-row">
           <img id="speaker-avatar" class="speaker-avatar" alt="">
