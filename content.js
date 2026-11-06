@@ -16,6 +16,26 @@
   const log = (...args) => console.info(LOG_PREFIX, ...args);
   const error = (...args) => console.error(LOG_PREFIX, ...args);
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // 非表示タブでは setTimeout が約1秒に間引かれ、閉じ処理などが体感的に異常に遅くなります。
+  // そこで画面が非表示のときはタイマー制限を受けない MessageChannel ベースの待ちに切り替えます。
+  // 表示中は通常の setTimeout の待ち（表示の安定のための実時間）を使います。
+  const fastWait = (ms) => (document.hidden
+    ? new Promise((resolve) => {
+      const channel = new MessageChannel();
+      const steps = Math.max(1, Math.round(ms / 4));
+      let received = 0;
+      channel.port1.onmessage = () => {
+        received += 1;
+        if (received >= steps) {
+          channel.port1.close();
+          resolve();
+          return;
+        }
+        channel.port2.postMessage(0);
+      };
+      channel.port2.postMessage(0);
+    })
+    : wait(ms));
   const waitFor = async (predicate, timeout = 400) => {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
@@ -577,7 +597,7 @@
     const backdrops = [...document.querySelectorAll('.MuiBackdrop-root, [data-testid*="backdrop" i]')].filter(visible);
     if (backdrops.length > 0) {
       backdrops[backdrops.length - 1].click();
-      await wait(280);
+      await fastWait(280);
       return;
     }
     const dialogs = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .MuiDrawer-root')].filter(visible);
@@ -598,11 +618,11 @@
       element.dispatchEvent(new MouseEvent('click', {
         bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
       }));
-      await wait(280);
+      await fastWait(280);
       return;
     }
     document.body.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-    await wait(280);
+    await fastWait(280);
   };
 
   const closeCharacterPicker = async (selector, opened = true) => {
@@ -616,7 +636,7 @@
   };
 
   let cachedChatState = null;
-  // ルームチャットのログ行を読み取ります。getChatState（10秒ポーリング）と
+  // ルームチャットのログ行を読み取ります。getChatState（3秒ポーリング）と
   // ログ変化時の即時プッシュの両方から使います。
   const readRoomLogMessages = () => {
     const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
@@ -778,8 +798,9 @@
     return attachUnreadTabs(state);
   };
 
-  // 「ログが変わったらすぐ制御ウィンドウへ反映する」人がいました。10秒ポーリングを待たず、
+  // 「ログが変わったらすぐ制御ウィンドウへ反映する」。ポーリングを待たず、
   // ログDOMの変化を検知して、そのたびに最新のメッセージ一覧を制御ウィンドウへ送ります。
+  // 仲介の待ち時間を短くして、新着メッセージをほぼ即座に反映させます。
   let lastPushedLogSignature = '';
   let pushLogTimer = null;
   const pushRoomLogUpdate = () => {
@@ -791,13 +812,13 @@
     try {
       chrome.runtime.sendMessage({ type: 'CCFOLIA_CHAT_LOG_PUSH', messages }).catch?.(() => {});
     } catch {
-      // 制御ウィンドウが開いていなければ送出先がなくても問題ありません（10秒ポーリングで反映します）。
+      // 制御ウィンドウが開いていなければ送出先がなくても問題ありません（ポーリングで反映します）。
     }
   };
   const watchRoomLog = () => {
     const observer = new MutationObserver(() => {
       clearTimeout(pushLogTimer);
-      pushLogTimer = setTimeout(pushRoomLogUpdate, 250);
+      pushLogTimer = setTimeout(pushRoomLogUpdate, 100);
     });
     const attach = () => {
       const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
@@ -811,7 +832,7 @@
     setInterval(() => {
       const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
       if (logList) attach();
-    }, 5000);
+    }, 2000);
     // 付け直しの瞬間の取りこぼしを防ぐため、初回は一度即pushします。
     pushRoomLogUpdate();
   };
@@ -915,8 +936,44 @@
   const closeChatPaletteDialog = (root) => {
     const closeButton = [...(root?.querySelectorAll('button') ?? [])].find((button) => visible(button)
       && (button.getAttribute('aria-label') === '閉じる' || button.querySelector('svg[data-testid="CloseIcon"]')));
-    if (closeButton) closeButton.click();
+    // MUIのボタンは試素の .click() では反応しないことがあるため、pointer/mouseイベントも送る pressElement で押します。
+    if (closeButton) pressElement(closeButton);
     else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  };
+  // パネル右上の「閉じる」ボタン（aria-label="閉じる" または CloseIcon のIconButton）を探します。
+  // シーン表やチャットパレットは外側クリック・Escapeでは消えないことがあるため、
+  // 閉じるボタンを直接押すのが確実です。設定上、ヘッダー部は表（root）のすぐ上に付くため、
+  // root内に見つからないときは「rootの上端近くにある閉じるボタン」を選びます。
+  const findPanelCloseButton = (root) => {
+    for (let node = root, depth = 0; node && node !== document.body && depth < 14; depth += 1, node = node.parentElement) {
+      const button = [...node.querySelectorAll('button')].filter(visible)
+        .find((button) => button.getAttribute('aria-label') === '閉じる'
+          || button.querySelector('svg[data-testid="CloseIcon"]'));
+      if (button) return button;
+    }
+    // 親をたどっても見つからないときは、rootの上端に近い（ヘッダーと想定する）閉じるボタンを選びます。
+    // 位置不明（rootなし）のときは、画面でもっとも手前（DOM末尾）のものを返します。
+    const buttons = [...document.querySelectorAll('button[aria-label="閉じる"]')].filter(visible);
+    if (!buttons.length) return null;
+    if (!root || !root.isConnected) return buttons.at(-1) ?? null;
+    const rect = root.getBoundingClientRect();
+    const anchorX = rect.left + rect.width / 2;
+    let best = null;
+    let bestDistance = Infinity;
+    for (const button of buttons) {
+      const buttonRect = button.getBoundingClientRect();
+      const distance = Math.hypot(
+        buttonRect.left - anchorX + buttonRect.width / 2,
+        buttonRect.top - rect.top - buttonRect.height
+      );
+      // 面板の真上〜上端あたり（±200px）のものだけを候補にします。
+      if (buttonRect.top > rect.bottom || buttonRect.bottom < rect.top - 160) continue;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = button;
+      }
+    }
+    return best ?? buttons.at(-1) ?? null;
   };
   const findPaletteDialogScrollableList = (root) => {
     // root がチャットパレットのヘッダー部分（MuiAppBar-root など）の場合、
@@ -943,7 +1000,7 @@
     const scrollableList = findPaletteDialogScrollableList(root);
     if (!scrollableList) throw new Error('チャットパレットのスクロール領域が見つかりません。');
 
-    const entries = new Set();
+    const entries = [];
     let itemLabelCount = 0;
     const collect = () => {
       itemLabelCount = collectLabels(scrollableList, entries);
@@ -966,11 +1023,14 @@
 
     collect();
     // 項目数・高さ・位置が固定したまま最下部に張り付くまで、少しずつスクロールします。
+    // スクロールが効かない場合（取り間違った要素など）は、そこまで読めた分で打ち切るので
+    // 表を長時間開けっぱなしにしません。
     let stablePasses = 0;
+    let noMovePasses = 0;
     let previousCount = -1;
     let previousHeight = -1;
     let previousTop = -1;
-    for (let pass = 0; pass < 500 && stablePasses < 3; pass += 1) {
+    for (let pass = 0; pass < 200 && stablePasses < 3; pass += 1) {
       const count = collect();
       const height = scrollingElement.scrollHeight;
       const top = Math.round(scrollingElement.scrollTop);
@@ -980,16 +1040,35 @@
       } else {
         stablePasses = 0;
       }
+      if (!atBottom && top === previousTop && previousTop >= 0) {
+        // 直前のステップでスクロールが全く効いていない（表が開いたまま止まる原因になる）ため即打ち切り。
+        noMovePasses += 1;
+        if (noMovePasses >= 2) break;
+      } else {
+        noMovePasses = 0;
+      }
       previousCount = count;
       previousHeight = height;
       previousTop = top;
       if (stablePasses >= 3) break;
       if (atBottom) break;
-      const step = Math.max(120, scrollingElement.clientHeight * 0.7);
+      // 非表示タブでは各待ちが約1秒に間引かれるため、1回で大きく進めて往復数を減らします
+      // （待ちが長いぶん表示の描画も追いつくので、大きく進めて安全です）。
+      const step = Math.max(120, scrollingElement.clientHeight * (document.hidden ? 1.6 : 0.7));
       const maxTop = height - scrollingElement.clientHeight;
       scrollingElement.scrollTop = Math.min(maxTop, scrollingElement.scrollTop + step);
       scrollingElement.dispatchEvent(new Event('scroll', { bubbles: true }));
       await wait(70);
+    }
+    // 主候補のほかにスクロール量のある容器（内側のリストなど）があれば、それらも
+    // 全部最下部まで送ってから読み直し、シーン・パレットの項目を取りこぼしません。
+    const otherScrollables = scrollCandidates.filter(visible)
+      .filter((element) => scrollDelta(element) > 1 && element !== scrollingElement);
+    for (const candidate of otherScrollables) {
+      candidate.scrollTop = candidate.scrollHeight - candidate.clientHeight;
+      candidate.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await wait(80);
+      collect();
     }
     collect();
     return [...entries];
@@ -997,10 +1076,12 @@
   const readChatPaletteEntries = (root) =>
     scanScrollableList(root, (scrollableList, entries) => {
       let count = 0;
+      // 同名の項目は重複としてまとめず「全部そのまま」残したい場合もあるため、
+      // シーン側と同じく配列で保持する（パレット側だけは読みやすさの重複除去）。
       for (const label of scrollableList.querySelectorAll('.MuiListItemButton-root[role="button"] .MuiListItemText-primary')) {
         count += 1;
         const text = normalizedText(label);
-        if (text) entries.add(text);
+        if (text && !entries.includes(text)) entries.push(text);
       }
       return count;
     });
@@ -1008,17 +1089,22 @@
   // シーン一覧の読み取り。シーンパネルもチャットパレットと同じ .MuiDialogContent-root.scrollable-list を
   // 使うため、走査ロジックを流用します。カード（.MuiCard-root）内の最初の見出し
   // （.MuiTypography-caption）がシーン名で、その次がBGMファイル名です。
-  const readSceneEntries = async (root) =>
-    scanScrollableList(root, (scrollableList, entries) => {
+  // 同名のシーン（「新しいシーン」が複数など）も読み取り数を正すため、カード単位で重複保持します。
+  const readSceneEntries = async (root) => {
+    const seenCards = new WeakSet();
+    return await scanScrollableList(root, (scrollableList, entries) => {
       let count = 0;
       for (const card of scrollableList.querySelectorAll('.MuiCard-root')) {
         count += 1;
+        if (seenCards.has(card)) continue;
+        seenCards.add(card);
         const caption = card.querySelector('.MuiTypography-caption');
         const text = normalizedText(caption);
-        if (text) entries.add(text);
+        if (text) entries.push(text);
       }
       return count;
     });
+  };
 
   const openSceneListPanel = async () => withChatDrawer(async () => {
     const icon = [...document.querySelectorAll('svg[data-testid="OndemandVideoIcon"]')].find(visible);
@@ -1035,6 +1121,15 @@
       .sort((left, right) => left.querySelectorAll('*').length - right.querySelectorAll('*').length)[0] ?? null, 3000);
     if (!root) {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      // 検出できなかった場合でも、表が開いたまま残ることがあるため後始末します。
+      // 画面に見えている「閉じる」ボタン（aria-label="閉じる"）を押してから外側クリックします。
+      for (const button of [...document.querySelectorAll('button[aria-label="閉じる"]')].filter(visible).slice(0, 3)) {
+        pressElement(button);
+        await fastWait(80);
+      }
+      if ([...document.querySelectorAll('.MuiPaper-root:has(.scrollable-list)')].some(visible)) {
+        await clickAwayFromMenus();
+      }
       throw new Error('CCFOLIAのシーン一覧を読み取れませんでした。');
     }
 
@@ -1042,14 +1137,32 @@
       const entries = await readSceneEntries(root);
       return { ok: true, entries };
     } finally {
-      // シーンパネルは閉じる処理が効かずCCFOLIAの画面に残ることがあるため、
-      // キャラクター選択メニューと同じように、パネルの外側（バックドロップや無関係な場所）を
-      // クリックして閉じます。それでも残る場合はEscapeも送ります。
-      await clickAwayFromMenus();
-      if (root.isConnected && visible(root)) {
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      // 走査が終わったらすぐ閉じる: まず「閉じる」ボタンを押し、短い間隔で閉じたか確認します。
+      // MUI製なので pressElement で pointer/mouse付きで押します。残っていたらEscape→外側クリック
+      // の順で、テンポよく消えるまで繰り返します（遅い外側クリックは最後の手段にします）。
+      const closeButton = findPanelCloseButton(root);
+      if (closeButton) pressElement(closeButton);
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await fastWait(attempt === 0 ? 100 : 120);
+        if (!root.isConnected || !visible(root)) break;
+        if (attempt === 0) {
+          // ボタンが効かなかった場合の即時の1発目は、安く速いEscapeから試します。
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        } else if (attempt % 2 === 1) {
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        } else {
+          await clickAwayFromMenus();
+        }
       }
-      await wait(80);
+      // 最後まで残った場合の保険: 画面に見えている「閉じる」ボタンを全部押してから外側クリックします。
+      if (root.isConnected && visible(root)) {
+        for (const button of [...document.querySelectorAll('button[aria-label="閉じる"]')].filter(visible).slice(0, 3)) {
+          pressElement(button);
+          await fastWait(80);
+        }
+        if (root.isConnected && visible(root)) await clickAwayFromMenus();
+      }
+      await fastWait(60);
     }
   }, { forceOpen: true, closeAfter: true });
   const openChatPalette = async () => withChatDrawer(async () => {
@@ -1074,12 +1187,60 @@
     try {
       // SANロール（1d100<={SAN}）やダメージ判定など、CCB以外の項目も含めて全項目を返します。
       const entries = await readChatPaletteEntries(root);
-      return { ok: true, entries };
+      // パレットは発言者（現在のキャラクター）ごとに内容が変わるため、
+      // どのキャラクターのパレットかを一緒に返します。
+      const speakerInput = document.querySelector('input[name="name"][placeholder="noname"]');
+      const characterName = (speakerInput?.value ?? '').trim();
+      return { ok: true, entries, characterName };
     } finally {
+      // 走査が終わったらすぐ閉じる: 「閉じる」ボタンを押し、残ったらEscape→外側クリックの順で
+      // 短いテンポで消えるまで試します（遅い外側クリックは最後の手段にします）。
       closeChatPaletteDialog(root);
-      await wait(80);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await fastWait(attempt === 0 ? 100 : 110);
+        if (!root.isConnected || !visible(root)) break;
+        if (attempt === 0) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        else await clickAwayFromMenus();
+      }
+      await fastWait(60);
     }
   }, { forceOpen: true, closeAfter: true });
+
+  // 取得などの操作でCCFOLIA側に開いてしまったダイアログ・メニュー（シーン表、チャットパレットなど）を
+  // すべて閉じて、画面をすっきりさせます。外側クリック→Escapeを、消えるまで最大4回繰り返します。
+  // シーン表やチャットパレットは role="dialog" を持たないMuiPaper製のため、
+  // scrollable-list やカードを含むパネルも検出対象にします。
+  const cleanUpMenus = async () => {
+    const openOverlays = () => [...document.querySelectorAll(
+      '[role="dialog"], .MuiDialog-root, .MuiModal-root, .MuiBackdrop-root, .MuiMenu-root, .MuiPopover-root, [aria-modal="true"],'
+        + ' .MuiPaper-root:has(.scrollable-list), .MuiPaper-root:has(.MuiCard-root), .MuiPaper-root:has(.MuiTabs-root)'
+    )].filter(visible).filter((element) => !element.matches('.MuiCard-root'));
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (!openOverlays().length) break;
+      // まず各パネルの「閉じる」ボタンを直接押します（シーン表・チャットパレットの正面の閉じ方）。
+      // MUI製のため pressElement で押します。実行中に上に乗るメニューが開き得るため、
+      // 表示中の上位数枚だけ押します。
+      for (const overlay of openOverlays().slice(-4)) {
+        const closeButton = findPanelCloseButton(overlay);
+        if (closeButton) pressElement(closeButton);
+      }
+      await fastWait(160);
+      if (!openOverlays().length) break;
+      // ルート要素を特定できなかったパネルにも対応するため、見えている「閉じる」ボタンを押してから
+      // 速いEscape→外側クリックの順で試します（aria-label="閉じる" は面板専用で誤押の心配がありません）。
+      for (const button of [...document.querySelectorAll('button[aria-label="閉じる"]')].filter(visible).slice(-3)) {
+        pressElement(button);
+      }
+      await fastWait(140);
+      if (!openOverlays().length) break;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await fastWait(140);
+      if (!openOverlays().length) break;
+      await clickAwayFromMenus();
+      await fastWait(140);
+    }
+    return { ok: true };
+  };
 
   // 自動削除モードの状態機械。
   // mode ON のとき、出現したメッセージ画面の全メッセージをスキップした後、
@@ -1380,7 +1541,8 @@
       CCFOLIA_CHAT_SELECT_CHARACTER_IN_ROOM: selectChatCharacter,
       CCFOLIA_CHAT_DICE_IN_ROOM: clickDiceShortcut,
       CCFOLIA_CHAT_PALETTE_IN_ROOM: openChatPalette,
-      CCFOLIA_SCENE_LIST_IN_ROOM: openSceneListPanel
+      CCFOLIA_SCENE_LIST_IN_ROOM: openSceneListPanel,
+      CCFOLIA_CLEANUP_UI_IN_ROOM: cleanUpMenus
     };
     const action = actions[message?.type];
     if (!action) return undefined;

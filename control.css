@@ -101,7 +101,8 @@ body[data-theme="original"] .message-content p {
 }
 
 /* チャットタブ・更新ボタン */
-body[data-theme="original"] #refresh-chat {
+body[data-theme="original"] #refresh-chat,
+body[data-theme="original"] #refresh-scan {
   color: #aaaaaa;
 }
 
@@ -188,7 +189,6 @@ input, select, textarea { min-width: 0; padding: 6px 9px; color: var(--text); bo
 #auto-delete-toggle { min-height: 29px; padding: 4px 12px; border-radius: 999px; }
 #auto-delete-toggle[aria-pressed="true"] { border-color: rgb(230 0 79 / .55); background: rgb(230 0 79 / .28); }
 .skip-automation #skip-status { flex: 1 0 100%; margin: 0; color: #9aa1ad; font-size: 11px; }
-#acquire-all { width: calc(100% - 20px); min-height: 34px; margin: 0 10px; }
 #characters { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; max-height: 180px; overflow: auto; margin: 8px 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); scrollbar-width: thin; scrollbar-color: #454c5c transparent; }
 .character-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 .character-name { min-width: 0; overflow-wrap: anywhere; color: #e0e3ea; }
@@ -218,7 +218,7 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 .chat-tab.is-selected { color: #fff; font-weight: 600; }
 .chat-tab.has-unread { color: var(--text); font-weight: 600; }
 .chat-tab-badge { position: absolute; top: 3px; right: 1px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 4px var(--accent); }
-#refresh-chat { flex: 0 0 auto; padding: 6px 12px; color: #b7bdc9; }
+#refresh-chat, #refresh-scan { flex: 0 0 auto; padding: 6px 12px; color: #b7bdc9; }
 
 /* 発言者行 */
 .speaker-row { display: flex; align-items: center; gap: 6px; min-height: 46px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }

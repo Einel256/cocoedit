@@ -1,7 +1,6 @@
 (() => {
   'use strict';
 
-  const acquireAllButton = document.getElementById('acquire-all');
   const charactersElement = document.getElementById('characters');
   const status = document.getElementById('status');
   const chatStatus = document.getElementById('chat-status');
@@ -13,6 +12,7 @@
   const composerSpeakerAvatar = document.getElementById('composer-speaker-avatar');
   const composerSpeakerName = document.getElementById('composer-speaker-name');
   const refreshChatButton = document.getElementById('refresh-chat');
+  const refreshScanButton = document.getElementById('refresh-scan');
   const openChatPaletteButton = document.getElementById('open-chat-palette');
   const speakerAvatar = document.getElementById('speaker-avatar');
   const characterChoice = document.getElementById('character-choice');
@@ -111,9 +111,46 @@
       return null;
     }
   };
-  let chatPaletteEntries = readStoredPalette() ?? [];
+  // 発言者（キャラクター）ごとのパレット。「再取得」で全キャラぶん取得すると、
+  // /g や技能パレット表示は現在の発言者に対応した技能だけを出します。
+  const PALETTE_MAP_KEY = 'ccfolia-chat-palette-map-v1';
+  const readPaletteMap = () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(PALETTE_MAP_KEY) || 'null');
+      if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {};
+      const map = {};
+      for (const [name, entries] of Object.entries(stored)) {
+        if (Array.isArray(entries) && entries.every((entry) => typeof entry === 'string')) map[name] = entries;
+      }
+      return map;
+    } catch {
+      return {};
+    }
+  };
+  let chatPaletteMap = readPaletteMap();
+  const savePaletteMap = () => localStorage.setItem(PALETTE_MAP_KEY, JSON.stringify(chatPaletteMap));
+  // 現在の発言者（キャラクター選択プルダウン）のキャラ名。
+  const speakerCharacterName = () => characterChoice.selectedOptions[0]?.dataset.characterName ?? '';
+  // 発言者用のパレット。キャラごとの保存がなければ、旧フラット配列へフォールバックします。
+  // フォールバックは参照をメモ化します（毎回JSONを解析すると参照が変わり、無駄に再描画するため）。
+  let legacyPaletteEntries = null;
+  const paletteEntriesFor = (name) => {
+    if (name && Array.isArray(chatPaletteMap[name])) return chatPaletteMap[name];
+    if (!legacyPaletteEntries) legacyPaletteEntries = readStoredPalette() ?? [];
+    return legacyPaletteEntries;
+  };
+  let chatPaletteEntries = paletteEntriesFor(speakerCharacterName());
   const savePaletteEntries = () => {
+    // 旧キーにも書き込みます（キャラごとの保存がない・取得前の環境向けフォールバック）。
     localStorage.setItem(PALETTE_STORAGE_KEY, JSON.stringify(chatPaletteEntries));
+  };
+  // 表示・入力補助で使うパレットを、現在の発言者のぶんへ切り替えます。
+  // 変わったときだけ技能パレットの描画を更新します。
+  const syncPaletteEntries = () => {
+    const entries = paletteEntriesFor(speakerCharacterName());
+    if (chatPaletteEntries === entries) return;
+    chatPaletteEntries = entries;
+    renderChatPalette();
   };
   // シーン一覧も保存し、/s を選ぶたびにCCFOLIA側のシーンパネルを開かなくて済むようにします。
   const SCENE_STORAGE_KEY = 'ccfolia-scene-list-v1';
@@ -185,7 +222,19 @@
     return result;
   };
 
-  // 選択中タブの赤い下線は、.chat-tabs の疑似要素を各タブの位置へスライドさせて描きます。
+  // 長時間応答しない操作（CCFOLIA側の走査など）で処理が固まらないよう、打ち切りを付けます。
+  // レース後に元の要求が解決・拒否されても、結果は無視します。
+  const requestTimeout = (promise, seconds, label) => {
+    promise.catch?.(() => {});
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => window.setTimeout(
+        () => reject(new Error(`${label}が応答しません（${seconds}秒で打ち切りました）`)), seconds * 1000
+      ))
+    ]);
+  };
+
+  // 選択中タブの赤い下線は、.chat-tabs の擬似要素を各タブの位置へスライドさせて描きます。
   // 下線をつらぬく静止の罫線は付けません（CSSは .chat-tabs::after を参照）。
   const updateChatTabIndicator = () => {
     const selected = chatTabs.querySelector('button.chat-tab.is-selected');
@@ -512,6 +561,8 @@
     } else if ([...characterChoice.options].some((option) => option.value === currentCharacter)) {
       characterChoice.value = currentCharacter;
     }
+    // CCFOLIA側の発言者が変わったら、表示中のパレットもそのキャラのぶんへ切り替えます。
+    syncPaletteEntries();
 
   };
 
@@ -931,6 +982,10 @@
       });
     }
     commandSuggestions.hidden = false;
+    // 選択中の行が候補の多いリスト内の画面外にあると、Tabや上下キーで移動しても
+    // 何を選んでいるのか分からなくなるため、ハイライトを見える位置へ送ります。
+    const highlighted = commandSuggestions.querySelector('.skill-suggestion-item.is-highlighted');
+    if (highlighted) highlighted.scrollIntoView({ block: 'nearest' });
     // 技能候補はコマンド入力中は表示しません。
     hideSkillSuggestions();
     return true;
@@ -1037,7 +1092,11 @@
       chatPaletteItems.append(item);
     }
     chatPaletteStatus.textContent = chatPaletteEntries.length
-      ? `${chatPaletteEntries.length}件`
+      ? (() => {
+        const name = speakerCharacterName();
+        const target = name && Array.isArray(chatPaletteMap[name]) ? name : null;
+        return `${target ? `${target}：` : ''}${chatPaletteEntries.length}件`;
+      })()
       : 'パレットの項目がありません。';
   };
 
@@ -1065,50 +1124,127 @@
     renderCharacterChoices();
   };
 
-  // キャラ情報・チャットパレット・チャットログを一括で取得します。
-  acquireAllButton.addEventListener('click', async () => {
-    acquireAllButton.disabled = true;
+  // 「更新」で、キャラ情報・チャットパレット・シーン・チャットログをまとめて取得します。
+  // パレット・シーンは保存済みのときはCCFOLIA側の再走査を省いて高速化します（個別の再取得は
+  // パレット面板の「再取得」や `/s` からできます）。取得後は、取得のために開いたCCFOLIA側の
+  // パネル（シーン・チャットパレットなど）をすべて閉じ、すっきりした状態に戻します。
+  // force=true（「再取得」ボタン）のときは、保存済みでもパレット・シーンをCCFOLIA側から
+  // 必ず取り直します。パレットは、全キャラクターぶんを一人ずつ読み込んでキャラごとに保存し、
+  // 元の発言者へ戻します（/g や技能パレットは発言者に対応した技能だけを出せるようになります）。
+  // 通常の「更新」は保存済みの再走査を省いて高速です。
+  const updateEverything = async ({ force = false } = {}) => {
+    if (refreshChatButton.disabled || refreshScanButton.disabled) return;
+    refreshChatButton.disabled = true;
+    refreshScanButton.disabled = true;
     openChatPaletteButton.disabled = true;
     refreshChatPaletteButton.disabled = true;
     try {
       status.textContent = 'キャラクター情報を取得しています…';
-      const result = await chrome.runtime.sendMessage({ type: 'CCFOLIA_ACQUIRE_CHARACTERS' });
+      const result = await requestTimeout(
+        chrome.runtime.sendMessage({ type: 'CCFOLIA_ACQUIRE_CHARACTERS' }), 300, 'キャラクター情報の取得'
+      );
       if (!result?.ok) throw new Error(result?.error || 'キャラクター情報を取得できませんでした。');
       storeAcquiredCharacters(result.characters);
       const characterCount = acquiredCharacters.length;
       let paletteCount = null;
+      let paletteCharacters = null;
       let sceneCount = null;
-      chatPalettePanel.hidden = false;
-      chatPaletteItems.replaceChildren();
-      chatPaletteStatus.textContent = 'チャットパレットを取得しています…';
-      try {
-        await fetchChatPaletteEntries();
-        paletteCount = chatPaletteEntries.length;
-        renderChatPalette();
-      } catch (reason) {
-        console.error('[CCFOLIA ステータス変更]', reason);
-        chatPalettePanel.hidden = true;
-        chatStatus.textContent = `チャットパレット: ${reason.message}`;
+      if (force) {
+        // 再走査: 全キャラクターぶんのパレットを取得してキャラごとに保存します。
+        chatPalettePanel.hidden = false;
+        chatPaletteItems.replaceChildren();
+        chatPaletteStatus.textContent = '全キャラクターのチャットパレットを取得しています…';
+        try {
+          const originalName = speakerCharacterName();
+          const names = acquiredCharacters.map((character) => character.name).filter(Boolean);
+          const items = {};
+          let failed = 0;
+          for (const name of names) {
+            try {
+              // 各工程に打ち切りを付け、CCFOLIA側が応答しなくても全体が固まらないようにします。
+              await requestTimeout(sendRequest('CCFOLIA_CHAT_SELECT_CHARACTER', { name, key: '' }), 30, `キャラクター「${name}」への切替`);
+              const palette = await requestTimeout(sendRequest('CCFOLIA_CHAT_PALETTE'), 180, `「${name}」のチャットパレット取得`);
+              if (palette?.characterName && Array.isArray(palette?.entries)) items[palette.characterName] = palette.entries;
+            } catch (reason) {
+              failed += 1;
+              console.error('[CCFOLIA ステータス変更]', reason);
+              chatStatus.textContent = `パレット取得: ${reason.message}`;
+            }
+          }
+          if (names.length) {
+            chatPaletteMap = { ...chatPaletteMap, ...items };
+            savePaletteMap();
+          }
+          // 元の発言者へ戻します。
+          if (originalName) {
+            try {
+              await requestTimeout(sendRequest('CCFOLIA_CHAT_SELECT_CHARACTER', { name: originalName, key: '' }), 30, '元の発言者への復帰');
+            } catch (reason) {
+              console.error('[CCFOLIA ステータス変更]', reason);
+            }
+          }
+          syncPaletteEntries();
+          renderChatPalette();
+          const values = Object.values(chatPaletteMap);
+          paletteCharacters = Object.keys(chatPaletteMap).length;
+          paletteCount = values.reduce((sum, entries) => sum + entries.length, 0);
+          if (failed > 0) chatStatus.textContent = `パレット: ${failed}キャラの取得に失敗しました。`;
+        } catch (reason) {
+          console.error('[CCFOLIA ステータス変更]', reason);
+          chatStatus.textContent = `チャットパレット: ${reason.message}`;
+        }
+      } else if (!chatPaletteEntries.length) {
+        chatPalettePanel.hidden = false;
+        chatPaletteItems.replaceChildren();
+        chatPaletteStatus.textContent = 'チャットパレットを取得しています…';
+        try {
+          await requestTimeout(fetchChatPaletteEntries(), 180, 'チャットパレットの取得');
+          paletteCount = chatPaletteEntries.length;
+          renderChatPalette();
+        } catch (reason) {
+          console.error('[CCFOLIA ステータス変更]', reason);
+          chatStatus.textContent = `チャットパレット: ${reason.message}`;
+        }
       }
+      if (force || !sceneEntries.length) {
+        try {
+          status.textContent = 'シーン一覧を取得しています…';
+          await requestTimeout(fetchSceneEntries(), 120, 'シーン一覧の取得');
+          sceneCount = sceneEntries.length;
+        } catch (reason) {
+          console.error('[CCFOLIA ステータス変更]', reason);
+          chatStatus.textContent = `シーン一覧: ${reason.message}`;
+        }
+      }
+      // 取得のためにCCFOLIA側で開いたシーン表・チャットパレット・メニューを閉じておきます。
       try {
-        status.textContent = 'シーン一覧を取得しています…';
-        await fetchSceneEntries();
-        sceneCount = sceneEntries.length;
-      } catch (reason) {
-        console.error('[CCFOLIA ステータス変更]', reason);
-        chatStatus.textContent = `シーン一覧: ${reason.message}`;
+        await requestTimeout(sendRequest('CCFOLIA_CLEANUP_UI'), 60, '画面の後片付け');
+      } catch {
+        // 閉じ損ねても処理は続けます（Escapeなど個別の閉じ処理は各取得側でも行っています）。
       }
       await refreshChatState({ force: true, includeCharacters: true });
-      status.textContent = `一括取得しました（キャラクター${characterCount}人${paletteCount !== null ? `、パレット${paletteCount}件` : ''}${sceneCount !== null ? `、シーン${sceneCount}件` : ''}）。`;
+      const paletteText = paletteCount !== null
+        ? `、パレット${paletteCharacters && paletteCharacters > 0 ? `${paletteCharacters}キャラ分` : ''}${paletteCount}件`
+        : '';
+      status.textContent = `${force ? '再走査しました' : '更新しました'}（キャラクター${characterCount}人${paletteText}${sceneCount !== null ? `、シーン${sceneCount}件` : ''}）。`;
     } catch (reason) {
       console.error('[CCFOLIA ステータス変更]', reason);
       status.textContent = reason instanceof Error ? reason.message : String(reason);
     } finally {
-      acquireAllButton.disabled = false;
+      refreshChatButton.disabled = false;
+      refreshScanButton.disabled = false;
       openChatPaletteButton.disabled = false;
       refreshChatPaletteButton.disabled = false;
+      // 技能表（チャットパレット面板）と設定画面を閉じて、すっきりした状態にします。
+      chatPalettePanel.hidden = true;
+      if (setupSection) {
+        setupSection.open = false;
+        settingsToggle?.setAttribute('aria-expanded', 'false');
+      }
     }
-  });
+  };
+  refreshChatButton.addEventListener('click', () => void updateEverything());
+  refreshScanButton.addEventListener('click', () => void updateEverything({ force: true }));
 
   charactersElement.addEventListener('change', (event) => {
     const select = event.target.closest('.character-number');
@@ -1127,13 +1263,18 @@
     renderCharacterChoices();
   });
 
-  refreshChatButton.addEventListener('click', () => void refreshChatState({ force: true, includeCharacters: true }));
-
-  // CCFOLIA側のチャットパレットを開いて全項目を走査し、結果をlocalStorageへ保存します。
+  // CCFOLIA側のチャットパレットを開いて全項目を走査し、発言者ごとにlocalStorageへ保存します。
   const fetchChatPaletteEntries = async () => {
     const result = await sendRequest('CCFOLIA_CHAT_PALETTE');
     chatPaletteEntries = result.entries ?? [];
+    const name = (typeof result.characterName === 'string' && result.characterName) ? result.characterName : speakerCharacterName();
+    if (name) {
+      chatPaletteMap = { ...chatPaletteMap, [name]: chatPaletteEntries };
+      savePaletteMap();
+    }
     savePaletteEntries();
+    // 取得した配列をフォールバックの参照とも合わせておきます。
+    legacyPaletteEntries = chatPaletteEntries;
     return chatPaletteEntries;
   };
 
@@ -1225,7 +1366,7 @@
     if (!renderCommandSuggestions()) showSkillSuggestions(chatInput.value);
   });
 
-  // CCFOLIA側でチャットログが変わるたび、10秒ポーリングを待たずに即座に反映します。
+  // CCFOLIA側でチャットログが変わるたび、ポーリングを待たずに即座に反映します。
   // content.js が CCFOLIA_CHAT_LOG_PUSH で最新メッセージ一覧を送ってくるので書き換えます。
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type !== 'CCFOLIA_CHAT_LOG_PUSH' || !Array.isArray(message.messages)) return undefined;
@@ -1240,7 +1381,10 @@
 
   chatInput.addEventListener('keydown', (event) => {
     if (event.isComposing || event.keyCode === 229) return;
-    const commandActive = Boolean(!commandSuggestions?.hidden && commandMatches.length);
+    // 候補の操作は「これから入力欄に入っているのが本物のコマンド入力（/m /g /g /s /a）のときだけ」有効です。
+    // 入力欄が空のまま候補操作の状態が残っていても、Tabで選択が動かないようにします。
+    const commandActive = Boolean(!commandSuggestions?.hidden && commandMatches.length
+      && parseCommandInput(chatInput.value));
     // Tab補完（fzf風）。Tabで下へ、Shift+Tabで上へ選択を移動します（入力欄は書き換えません）。
     if (event.key === 'Tab' && commandActive) {
       event.preventDefault();
@@ -1279,6 +1423,8 @@
     try {
       await sendRequest('CCFOLIA_CHAT_SELECT_CHARACTER', { name, key });
       await refreshChatState({ force: true, includeCharacters: true });
+      // 技能パレット・入力補助の表示を、切り替え先キャラのパレットに合わせて更新します。
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     } catch (reason) {
       chatStatus.textContent = reason.message;
     }
@@ -1301,6 +1447,6 @@
   syncCommandMap();
   void refreshChatState({ force: true, includeCharacters: true });
   void syncAutoSkipStatus();
-  window.setInterval(() => void refreshChatState({ force: false }), 10000);
+  window.setInterval(() => void refreshChatState({ force: false }), 3000);
   window.setInterval(() => void syncAutoSkipStatus(), 1000);
 })();
