@@ -695,13 +695,17 @@
       return [];
     }
   })();
+  // 各aliasのボタン列への表示は個別に切り替えられます。古い保存データ（buttonVisibleなし）は表示扱いです。
+  const isAliasButtonVisible = (entry) => entry?.buttonVisible !== false;
   let aliasEditingIndex = -1;
   const saveAliasEntries = () => {
     localStorage.setItem(ALIAS_STORAGE_KEY, JSON.stringify(aliasEntries));
   };
   const renderAliasButtons = () => {
     aliasButtons.replaceChildren();
+    // 順序はalias一覧の並び（設定で↑↓入替）に従い、非表示に設定したaliasのボタンは出しません。
     for (const [index, entry] of aliasEntries.entries()) {
+      if (!isAliasButtonVisible(entry)) continue;
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = entry.name;
@@ -775,8 +779,60 @@
       const preview = document.createElement('span');
       preview.textContent = '（' + entry.text.replace(/\s+/g, ' ').trim().slice(0, 40) + '）';
       row.append(preview);
+      // このaliasのボタン列表示の切り替え。
+      const visibilityButton = document.createElement('button');
+      visibilityButton.type = 'button';
+      visibilityButton.className = 'alias-visibility';
+      visibilityButton.textContent = isAliasButtonVisible(entry) ? 'ボタン：表示' : 'ボタン：非表示';
+      visibilityButton.setAttribute('aria-pressed', String(isAliasButtonVisible(entry)));
+      visibilityButton.title = 'ボタン列に表示するか、このaliasだけ隠すかを切り替えます';
+      visibilityButton.setAttribute('aria-label', `エイリアス「${entry.name}」のボタン列表示を切り替え`);
+      visibilityButton.addEventListener('click', () => {
+        entry.buttonVisible = !isAliasButtonVisible(entry);
+        saveAliasEntries();
+        renderAliasEditor();
+        renderAliasButtons();
+        applyAliasButtonsVisibility();
+      });
+      row.append(visibilityButton);
+      // 順番の入替（上／下へ移動）。
+      const upButton = document.createElement('button');
+      upButton.type = 'button';
+      upButton.className = 'alias-reorder';
+      upButton.textContent = '↑';
+      upButton.title = 'このaliasを上へ移動します';
+      upButton.setAttribute('aria-label', `エイリアス「${entry.name}」を上へ移動`);
+      upButton.disabled = index === 0;
+      upButton.addEventListener('click', () => {
+        if (index === 0) return;
+        [aliasEntries[index - 1], aliasEntries[index]] = [aliasEntries[index], aliasEntries[index - 1]];
+        if (aliasEditingIndex === index) aliasEditingIndex = index - 1;
+        else if (aliasEditingIndex === index - 1) aliasEditingIndex = index;
+        saveAliasEntries();
+        renderAliasEditor();
+        renderAliasButtons();
+      });
+      row.append(upButton);
+      const downButton = document.createElement('button');
+      downButton.type = 'button';
+      downButton.className = 'alias-reorder';
+      downButton.textContent = '↓';
+      downButton.title = 'このaliasを下へ移動します';
+      downButton.setAttribute('aria-label', `エイリアス「${entry.name}」を下へ移動`);
+      downButton.disabled = index >= aliasEntries.length - 1;
+      downButton.addEventListener('click', () => {
+        if (index >= aliasEntries.length - 1) return;
+        [aliasEntries[index + 1], aliasEntries[index]] = [aliasEntries[index], aliasEntries[index + 1]];
+        if (aliasEditingIndex === index) aliasEditingIndex = index + 1;
+        else if (aliasEditingIndex === index + 1) aliasEditingIndex = index;
+        saveAliasEntries();
+        renderAliasEditor();
+        renderAliasButtons();
+      });
+      row.append(downButton);
       const deleteButton = document.createElement('button');
       deleteButton.type = 'button';
+      deleteButton.className = 'alias-delete';
       deleteButton.textContent = '削除';
       deleteButton.setAttribute('aria-label', `エイリアス「${entry.name}」を削除`);
       deleteButton.addEventListener('click', () => {
@@ -807,14 +863,18 @@
       return;
     }
     const existingIndex = aliasEntries.findIndex((entry) => entry.name === name);
+    // 編集・同名上書きのときは既存の表示設定を引き継ぎ、追加のときは表示ONで登録します。
+    const buttonVisible = (aliasEditingIndex >= 0 && aliasEntries[aliasEditingIndex]
+      ? isAliasButtonVisible(aliasEntries[aliasEditingIndex])
+      : existingIndex >= 0 ? isAliasButtonVisible(aliasEntries[existingIndex]) : true);
     if (aliasEditingIndex >= 0 && aliasEntries[aliasEditingIndex]) {
-      aliasEntries[aliasEditingIndex] = { name, text };
+      aliasEntries[aliasEditingIndex] = { name, text, buttonVisible };
       resetAliasEditor();
     } else if (existingIndex >= 0) {
       // 同名のaliasがあるときは上書きします。
-      aliasEntries[existingIndex] = { name, text };
+      aliasEntries[existingIndex] = { name, text, buttonVisible };
     } else {
-      aliasEntries.push({ name, text });
+      aliasEntries.push({ name, text, buttonVisible: true });
     }
     saveAliasEntries();
     aliasStatus.textContent = `alias「${name}」を登録しました。`;

@@ -286,6 +286,13 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: 1
 .alias-list li > span { flex: 1 1 auto; overflow: hidden; color: #8a91a0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .alias-list li > button:last-child { flex: 0 0 auto; min-height: 22px; padding: 2px 8px; border: none; border-radius: 6px; background: transparent; color: #9aa1ad; font-size: 11.5px; }
 .alias-list li > button:last-child:hover { color: #ff9aa2; }
+/* aliasごとのボタン列表示切替・順番入替ボタン */
+.alias-list li > .alias-visibility { flex: 0 0 auto; min-height: 22px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: #9aa1ad; font-size: 11px; white-space: nowrap; }
+.alias-list li > .alias-visibility[aria-pressed="true"] { border-color: var(--accent); color: #fff; background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.alias-list li > .alias-visibility:hover { color: #cfd3db; }
+.alias-list li > .alias-reorder { flex: 0 0 auto; min-width: 22px; min-height: 22px; padding: 0 4px; border: 1px solid var(--line); border-radius: 6px; background: rgb(255 255 255 / .04); color: #9aa1ad; font-size: 11px; line-height: 1; }
+.alias-list li > .alias-reorder:hover:not(:disabled) { color: #fff; border-color: rgb(255 255 255 / .3); }
+.alias-list li > .alias-reorder:disabled { opacity: .35; cursor: default; }
 #alias-status { min-height: 14px; margin: 0; color: #8a91a0; font-size: 11px; }
 .alias-editor #alias-cancel { background: transparent; color: #9aa1ad; font-weight: 500; }
 #alias-cancel:hover { color: #fff; }
