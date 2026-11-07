@@ -119,6 +119,7 @@
 
   const acquireCharacters = async () => {
     const hpRows = findMetricRows(METRICS.hp);
+    log(`キャラクター情報の取得を開始します。HP表示行を${hpRows.length}件認識しました。`);
     if (hpRows.length === 0) throw new Error('キャラクターのHP表示行が見つかりませんでした。');
     const rawCharacters = [];
     for (let index = 0; index < hpRows.length; index += 1) {
@@ -127,18 +128,38 @@
       if (!target.row.isConnected || !visible(target.row)) {
         throw new Error('キャラクター情報の取得中に表示が変わりました。もう一度取得してください。');
       }
+      // 編集画面はMUIの遷移を伴って開くため、出現するまで待ちます（固定待ちでは取りこぼすことがあります）。
+      const openDialogsBefore = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .MuiDrawer-root, .MuiPopover-root')].filter(visible).length;
       target.row.click();
-      await wait(40);
+      let editor = await waitFor(() => {
+        const editors = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .MuiDrawer-root, .MuiPopover-root')]
+          .filter(visible);
+        return editors.length > openDialogsBefore ? editors.at(-1) : null;
+      }, 1500);
       let name;
       try {
-        const editor = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .MuiDrawer-root, .MuiPopover-root')]
-          .filter(visible).at(-1);
-        name = getCharacterName(target, index, editor);
+        if (!editor) {
+          // 編集画面が開かない行では、行まわりの表示から名前を推測します。
+          log(`${index + 1}件目: 編集画面が開きませんでした。行まわりの表示から名前を推測します。`);
+          name = getCharacterName(target, index, null);
+          log(`${index + 1}件目: 推測した名前は「${name}」です。`);
+        } else {
+          name = getCharacterName(target, index, editor);
+          log(`${index + 1}件目: 「${name}」（編集画面から取得）`);
+        }
       } finally {
         await clickOutsideEditor(target.row);
+        // 編集画面が閉じきってから次へ進みます。残っていると次の行の検知と名前取得が壊れます。
+        const closed = await waitFor(
+          () => [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .MuiDrawer-root, .MuiPopover-root')]
+            .filter(visible).length <= openDialogsBefore,
+          1000
+        );
+        if (!closed) log(`${index + 1}件目: 編集画面が閉じたことを確認できませんでした。`);
       }
       rawCharacters.push({ id: String(index), name });
     }
+    log(`キャラクター情報を${rawCharacters.length}件取得しました。: ${rawCharacters.map((item) => item.name).join(' / ')}`);
     const nameCounts = new Map();
     for (const character of rawCharacters) nameCounts.set(character.name, (nameCounts.get(character.name) ?? 0) + 1);
     const nameIndexes = new Map();
@@ -549,21 +570,42 @@
 
   const getCharacterPickerOptions = async () => {
     const selector = document.querySelector('button[aria-label="キャラクター選択"]');
-    if (!selector || !selector.isConnected) return { selector, options: [], opened: false };
+    if (!selector || !selector.isConnected) {
+      log('キャラクター選択ボタンが見つかりませんでした（チャットの入力欄が隠れている可能性があります）。');
+      return { selector, options: [], opened: false };
+    }
     const listSelector = 'ul.MuiList-root:has(.MuiListItemButton-root[role="button"])';
+    const menuRootSelector = '[role="dialog"], [role="listbox"], [role="menu"], .MuiPopover-root, .MuiMenu-root';
     let characterLists = [...document.querySelectorAll(listSelector)].filter(visible);
     const alreadyOpen = characterLists.length > 0;
     const interactiveSelector = '[role="option"], [role="menuitem"], button, [role="button"], li, [tabindex="0"]';
     const visibleBefore = new Set([...document.querySelectorAll('*')].filter(visible));
+    const menusBefore = [...document.querySelectorAll(menuRootSelector)].filter(visible).length;
+    // メニューはMUIの遷移を伴って開くため、出現を確認しながら待ちます。
+    // リストの形が違うときは、メニュー領域だけでも出たことの確認に使います。
+    const lookForMenu = async (timeout) => {
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        characterLists = [...document.querySelectorAll(listSelector)].filter(visible);
+        if (characterLists.length) return true;
+        if ([...document.querySelectorAll(menuRootSelector)].filter(visible).length > menusBefore) return true;
+        await wait(12);
+      }
+      return false;
+    };
     const opened = !alreadyOpen;
     if (opened) {
       const avatar = selector.querySelector('img.MuiAvatar-img');
       if (avatar) avatar.click();
       else selector.click();
-      characterLists = await waitFor(() => {
-        const lists = [...document.querySelectorAll(listSelector)].filter(visible);
-        return lists.length ? lists : null;
-      }, 400) ?? [];
+      if (!(await lookForMenu(1000))) {
+        // アバターのクリックで開かない場合は、ボタン自体も試します。
+        log('キャラクター選択メニューが開かないため、ボタン自体をクリックします。');
+        selector.click();
+        if (!(await lookForMenu(600))) {
+          log('キャラクター選択メニューを開けませんでした。');
+        }
+      }
     }
     const characterList = characterLists.at(-1);
     if (characterList) {
@@ -577,9 +619,11 @@
           return { name, key: image?.currentSrc || image?.src || '', state, element, index };
         })
         .filter((option) => option.name);
+      log(`キャラクター選択メニューから${options.length}件取得しました。`);
       return { selector, options, opened };
     }
 
+    log('キャラクター選択メニューのリストを直接読めなかったため、表示中の候補を走査します。');
     let roots = [...document.querySelectorAll('[role="dialog"], [role="listbox"], [role="menu"], .MuiPopover-root, .MuiMenu-root')]
       .filter(visible);
     const root = roots.at(-1);
@@ -609,6 +653,7 @@
       .filter((option) => option.name.length < 100)
       .filter((option, index, all) => all.findIndex((candidate) =>
         candidate.name === option.name && candidate.key === option.key) === index);
+    log(`表示中の候補を直接走査して${options.length}件取得しました。`);
     return { selector, options, opened };
   };
 
@@ -802,6 +847,11 @@
       .filter((label) => /^D(?:2|3|4|6|8|10|12|20|100)$/.test(label));
     const picker = includeCharacters ? await getCharacterPickerOptions() : null;
     if (picker) await closeCharacterPicker(picker.selector, picker.opened);
+    // メニューを読めなかったときは、保存済みの候補を引き継ぎます。
+    // ここで上書きしてしまうと、読み取りに1度失敗しただけでプルダウンが空になってしまいます。
+    const characters = picker && picker.options.length
+      ? picker.options.map(({ name, key, state, index }) => ({ name, key, state, index }))
+      : cachedChatState?.characters ?? [];
     return {
       ok: true,
       tabs,
@@ -809,9 +859,7 @@
       speakerName: speaker?.value ?? '',
       speakerAvatar: speakerImage?.currentSrc || speakerImage?.src || '',
       draftText: findVisibleChatTextarea()?.value ?? '',
-      characters: picker
-        ? picker.options.map(({ name, key, state, index }) => ({ name, key, state, index }))
-        : cachedChatState?.characters ?? [],
+      characters,
       diceButtons: [...new Set(diceButtons)]
     };
     });
@@ -931,9 +979,16 @@
   const selectChatCharacter = async ({ name, key }) => withChatDrawer(async () => {
     const picker = await getCharacterPickerOptions();
     const wanted = String(name ?? '').replace(/\s+/g, ' ').trim();
-    const option = picker.options.find((candidate) => (key && sameImage(candidate.key, key)) || candidate.name === wanted);
+    // 取得した名前には同名キャラを区別する「（N・一覧M番目）」が付いていることがあり、
+    // メニュー側の名前は素の形なので、取り除いた形でも照合します。
+    const plainWanted = wanted.replace(/（\d+・一覧\d+番目）$/, '').trim() || wanted;
+    const option = picker.options.find((candidate) => (key && sameImage(candidate.key, key))
+      || candidate.name === wanted
+      || candidate.name === plainWanted);
     if (!option) {
       await closeCharacterPicker(picker.selector, picker.opened);
+      log(`「${wanted}」がキャラクター選択メニューにありません。表示中の候補: `
+        + (picker.options.slice(0, 10).map((item) => item.name).join(' / ') || '（0件）'));
       throw new Error(`「${wanted}」をキャラクター選択メニューから見つけられませんでした。`);
     }
     option.element.click();
@@ -1187,7 +1242,8 @@
       await fastWait(60);
     }
   }, { forceOpen: true, closeAfter: true });
-  const openChatPalette = async () => withChatDrawer(async () => {
+  // チャットパレット（ListAltIconのボタン）を開いて、現在のキャラクターの技能一覧を読み、閉じます。
+  const openChatPaletteDialog = async () => {
     const icon = [...document.querySelectorAll('svg[data-testid="ListAltIcon"]')].find(visible);
     const button = icon?.closest('button');
     if (!button) throw new Error('CCFOLIAのチャットパレットボタンが見つかりません。');
@@ -1213,6 +1269,7 @@
       // どのキャラクターのパレットかを一緒に返します。
       const speakerInput = document.querySelector('input[name="name"][placeholder="noname"]');
       const characterName = (speakerInput?.value ?? '').trim();
+      log(`チャットパレット（${characterName || '発言者なし'}）を${entries.length}件読み取りました。`);
       return { ok: true, entries, characterName };
     } finally {
       // 走査が終わったらすぐ閉じる: 「閉じる」ボタンを押し、残ったらEscape→外側クリックの順で
@@ -1226,7 +1283,73 @@
       }
       await fastWait(60);
     }
-  }, { forceOpen: true, closeAfter: true });
+  };
+
+  const openChatPalette = async () => withChatDrawer(async () => openChatPaletteDialog(), { forceOpen: true, closeAfter: true });
+
+  // 「再走査」の本体: キャラクター選択メニューで選べるキャラを順に選び、選ぶたびに
+  // チャットパレット（ListAltIconのボタン）を開いて技能を読み込みます。
+  // 1回のチャットウィンドウ開放のまま巡回するので、人ごとの切替が途中で崩れません。
+  const scanAllChatPalettes = async () => withChatDrawer(async () => {
+    const speakerInput = () => document.querySelector('input[name="name"][placeholder="noname"]');
+    const originalName = (speakerInput()?.value ?? '').trim();
+    let picker = await getCharacterPickerOptions();
+    let options = picker.options.filter((option) => option.name);
+    log(`キャラクター選択メニューから選択できるキャラを${options.length}人認識しました。`);
+    const items = {};
+    let failed = 0;
+    for (let index = 0; index < options.length; index += 1) {
+      const wanted = options[index];
+      log(`${index + 1}/${options.length}人目「${wanted.name}」を選択してパレットを読み込みます。`);
+      // 選択のたびにメニューを開き直します。MUIは開くたびにDOMを作り直すので、
+      // 新しいDOMから同じ候補を選び直します（名前と見た目で照合し、無ければ同じ位置を選びます）。
+      if (index > 0) {
+        picker = await getCharacterPickerOptions();
+        options = picker.options.filter((option) => option.name);
+      }
+      const again = picker.options.find((candidate) => candidate.name === wanted.name
+        && (!wanted.key || sameImage(candidate.key, wanted.key)))
+        ?? options[index];
+      if (!again?.element) {
+        log(`「${wanted.name}」がメニューから見つからなくなったため、ここで打ち切ります。`);
+        failed += 1;
+        break;
+      }
+      again.element.click();
+      // 切り替えが発言名に反映されたかを確認します。反映されていなくても、
+      // パレットはCCFOLIA側の実際の選択キャラのまま読むため、名前の偽書き換えはしません。
+      const applied = await waitFor(() => {
+        const input = speakerInput();
+        return input?.value === again.name ? input : null;
+      }, 250);
+      if (!applied) {
+        log(`「${again.name}」への切り替えが発言名に反映されているのを確認できませんでした。`);
+      }
+      try {
+        const result = await openChatPaletteDialog();
+        if (result?.ok && Array.isArray(result.entries) && result.characterName) {
+          items[result.characterName] = result.entries;
+          log(`「${result.characterName}」のパレットを${result.entries.length}件保存します。`);
+        } else {
+          failed += 1;
+          log(`「${again.name}」のパレットを読み取れませんでした。`);
+        }
+      } catch (reason) {
+        failed += 1;
+        log(`「${again.name}」のパレット取得に失敗しました。`, reason instanceof Error ? reason.message : reason);
+      }
+    }
+    // 巡回が終わったら、残ったメニューを閉じて、読み始めたときの発言者へ戻します。
+    await clickAwayFromMenus();
+    if (originalName && originalName !== (speakerInput()?.value ?? '').trim()) {
+      try {
+        await selectChatCharacter({ name: originalName, key: '' });
+      } catch (reason) {
+        log('元の発言者へ戻せませんでした。', reason instanceof Error ? reason.message : reason);
+      }
+    }
+    return { ok: true, items, failed, originalName };
+  }, { forceOpen: true });
 
   // 取得などの操作でCCFOLIA側に開いてしまったダイアログ・メニュー（シーン表、チャットパレットなど）を
   // すべて閉じて、画面をすっきりさせます。外側クリック→Escapeを、消えるまで最大4回繰り返します。
@@ -1543,6 +1666,8 @@
   let chatOverlayPositionTimer = 0;
   let chatOverlayResizeObserver = null;
   let chatOverlayPositionHandler = null;
+  // 「再取得」などの間は拡張チャットのオーバーレイを一時的に隠します。隠す期限の時刻で管理します。
+  let chatOverlaySuspendedUntil = null;
 
   const findChatPanel = () => {
     const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
@@ -1619,6 +1744,14 @@
       </style>
       <iframe title="拡張チャット" src="${chrome.runtime.getURL('control.html?embedded=1')}"></iframe>`;
     const positionChatOverlay = () => {
+      // 取得などの間にオーバーレイを一時的に隠しているときは、期限が来るまで隠したままにします。
+      if (chatOverlaySuspendedUntil !== null) {
+        if (Date.now() < chatOverlaySuspendedUntil) {
+          host.hidden = true;
+          return;
+        }
+        chatOverlaySuspendedUntil = null;
+      }
       if (!chatDrawerIsOpen()) {
         if (chatOverlayMode === 'expanded') {
           setChatOverlayMode('room', { remember: false })
@@ -1691,6 +1824,8 @@
   };
 
   const synchronizeChatOverlayMode = () => {
+    // オーバーレイを一時的に隠している間はモードを切り替えません（iframeを閉じると制御ウィンドウ側の処理が途切れます）。
+    if (chatOverlaySuspendedUntil !== null) return;
     if (chatOverlaySyncPromise) return;
     chatOverlaySyncPromise = (async () => {
       if (preferredChatOverlayMode === 'expanded' && chatDrawerIsOpen()) {
@@ -1703,6 +1838,29 @@
       .finally(() => {
         chatOverlaySyncPromise = null;
       });
+  };
+
+  // 「再取得」など、CCFOLIA本体側のUIを直接操作する処理の間は、拡張チャットのオーバーレイを一時的に隠します。
+  // モードをOFFにするとiframeごと消えて制御ウィンドウ側の処理が途切れるため、
+  // 非表示にするだけにして、処理が終わったら元に戻します。
+  const CHAT_OVERLAY_SUSPEND_EXPIRY_MS = 30 * 60 * 1000;
+  const setChatOverlaySuspended = (paused) => {
+    if (paused) {
+      // 入れ子になっても考えずに済むよう、要求が届くたびに期限を延ばすだけにします。
+      chatOverlaySuspendedUntil = Date.now() + CHAT_OVERLAY_SUSPEND_EXPIRY_MS;
+      document.getElementById(CHAT_OVERLAY_ID)?.setAttribute('hidden', '');
+      return { ok: true, expanded: chatOverlayMode === 'expanded' };
+    }
+    const wasSuspended = chatOverlaySuspendedUntil !== null;
+    chatOverlaySuspendedUntil = null;
+    if (wasSuspended) {
+      // 復元の結果としてiframeが閉じることがあるため、応答を先に返してから復元します。
+      window.setTimeout(() => {
+        chatOverlayPositionHandler?.();
+        synchronizeChatOverlayMode();
+      }, 50);
+    }
+    return { ok: true, expanded: chatOverlayMode === 'expanded' };
   };
 
   const installChatOverlaySelector = () => {
@@ -1766,6 +1924,10 @@
         });
       return true;
     }
+    if (message?.type === 'CCFOLIA_CHAT_OVERLAY_SUSPEND_IN_ROOM') {
+      sendResponse(setChatOverlaySuspended(message.paused !== false));
+      return undefined;
+    }
     if (message?.type === 'CCFOLIA_ACQUIRE_CHARACTERS_IN_ROOM') {
       acquireCharacters()
         .then((result) => sendResponse(result))
@@ -1809,6 +1971,7 @@
       CCFOLIA_CHAT_SELECT_CHARACTER_IN_ROOM: selectChatCharacter,
       CCFOLIA_CHAT_DICE_IN_ROOM: clickDiceShortcut,
       CCFOLIA_CHAT_PALETTE_IN_ROOM: openChatPalette,
+      CCFOLIA_CHAT_PALETTE_SCAN_ALL_IN_ROOM: scanAllChatPalettes,
       CCFOLIA_SCENE_LIST_IN_ROOM: openSceneListPanel,
       CCFOLIA_CLEANUP_UI_IN_ROOM: cleanUpMenus
     };

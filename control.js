@@ -272,6 +272,26 @@
     ]);
   };
 
+  // CCFOLIA本体のUIを直接操作して情報を取得する間、拡張チャットのオーバーレイを一時的に隠します。
+  // 取得対象のパネルやボタンがオーバーレイの下に埋まって操作できなくなることがあるためで、
+  // モードは変えずに（iframeは生かしたまま）非表示にだけして、処理が終わったら元に戻します。
+  const pauseChatOverlay = async () => {
+    try {
+      const result = await sendRequest('CCFOLIA_CHAT_OVERLAY_SUSPEND', { paused: true });
+      return result?.expanded === true;
+    } catch (reason) {
+      console.error('[CCFOLIA ステータス変更]', '拡張チャットを一時的に隠せませんでした。', reason);
+      return false;
+    }
+  };
+  const resumeChatOverlay = async () => {
+    try {
+      await sendRequest('CCFOLIA_CHAT_OVERLAY_SUSPEND', { paused: false });
+    } catch (reason) {
+      console.error('[CCFOLIA ステータス変更]', '拡張チャットを元に戻せませんでした。', reason);
+    }
+  };
+
   // 選択中タブの赤い下線は、.chat-tabs の擬似要素を各タブの位置へスライドさせて描きます。
   // 下線をつらぬく静止の罫線は付けません（CSSは .chat-tabs::after を参照）。
   const updateChatTabIndicator = () => {
@@ -588,22 +608,25 @@
     const currentCharacter = characterChoice.value;
     // キャラクター選択プルダウン。選択肢はキャラクターのみで（選択なし・状態表記なし）。
     // CCFOLIA側の現在の発言者にプルダウンを追従させます。
-    characterChoice.replaceChildren();
-    let matchedOption = null;
-    for (const character of chatState.characters ?? []) {
-      const name = character.name || `キャラクター${character.index + 1}`;
-      const value = character.key || String(character.index);
-      const option = new Option(name, value);
-      option.dataset.state = character.state || '';
-      option.dataset.characterName = character.name || '';
-      option.dataset.characterKey = character.key || '';
-      characterChoice.append(option);
-      if (character.name && character.name === chatState.speakerName) matchedOption = option;
-    }
-    if (matchedOption) {
-      characterChoice.value = matchedOption.value;
-    } else if ([...characterChoice.options].some((option) => option.value === currentCharacter)) {
-      characterChoice.value = currentCharacter;
+    // 候補を1件も読めなかったときは、手元に残っている選択肢を壊さないでおきます。
+    if ((chatState.characters ?? []).length) {
+      characterChoice.replaceChildren();
+      let matchedOption = null;
+      for (const character of chatState.characters) {
+        const name = character.name || `キャラクター${character.index + 1}`;
+        const value = character.key || String(character.index);
+        const option = new Option(name, value);
+        option.dataset.state = character.state || '';
+        option.dataset.characterName = character.name || '';
+        option.dataset.characterKey = character.key || '';
+        characterChoice.append(option);
+        if (character.name && character.name === chatState.speakerName) matchedOption = option;
+      }
+      if (matchedOption) {
+        characterChoice.value = matchedOption.value;
+      } else if ([...characterChoice.options].some((option) => option.value === currentCharacter)) {
+        characterChoice.value = currentCharacter;
+      }
     }
     // CCFOLIA側の発言者が変わったら、表示中のパレットもそのキャラのぶんへ切り替えます。
     syncPaletteEntries();
@@ -1221,6 +1244,44 @@
     renderCharacterChoices();
   };
 
+  // 巡回方式（CCFOLIA_CHAT_PALETTE_SCAN_ALL）に失敗したときのフォールバック:
+  // 名前を指定してキャラを切り替えながら、人ごとにパレットを読み込みます。
+  const acquirePalettesPerName = async () => {
+    let names = acquiredCharacters.map((character) => character.name).filter(Boolean);
+    // HP行からキャラ情報を取れていないときは、チャット側のキャラクター選択メニューの
+    // 候補から名前を採って、人数ぶんの取得を続行します。
+    if (!names.length) {
+      chatStatus.textContent = 'キャラクター選択メニューから候補を取得しています…';
+      await refreshChatState({ force: true, includeCharacters: true });
+      names = (latestChatState?.characters ?? []).map((item) => item.name).filter(Boolean);
+      if (names.length) {
+        chatPaletteStatus.textContent = `キャラ情報が未取得のため、選択メニューの${names.length}件から読み込みます。`;
+      }
+    }
+    const items = {};
+    let failed = 0;
+    for (const [loopIndex, name] of names.entries()) {
+      chatStatus.textContent = `パレットを取得しています…（${loopIndex + 1}/${names.length}人目: 「${name}」）`;
+      try {
+        // 各工程に打ち切りを付け、CCFOLIA側が応答しなくても全体が固まらないようにします。
+        await requestTimeout(sendRequest('CCFOLIA_CHAT_SELECT_CHARACTER', { name, key: '' }), 30, `キャラクター「${name}」への切替`);
+        const palette = await requestTimeout(sendRequest('CCFOLIA_CHAT_PALETTE'), 180, `「${name}」のチャットパレット取得`);
+        if (palette?.characterName && Array.isArray(palette?.entries)) {
+          console.info('[CCFOLIA ステータス変更]', `パレット（${palette.characterName}）を${palette.entries.length}件保存します。`);
+          items[palette.characterName] = palette.entries;
+        } else {
+          failed += 1;
+          console.error('[CCFOLIA ステータス変更]', `「${name}」のパレットが読み取れませんでした（発言者「${palette?.characterName || ''}」、項目${palette?.entries?.length ?? 0}件）。`);
+        }
+      } catch (reason) {
+        failed += 1;
+        console.error('[CCFOLIA ステータス変更]', reason);
+        chatStatus.textContent = `パレット取得: ${reason.message}`;
+      }
+    }
+    return { items, failed };
+  };
+
   // 「再取得」で、キャラ情報・チャットパレット・シーン・チャットログをまとめて取得します。
   // 保存済みでもパレット・シーンをCCFOLIA側から
   // 必ず取り直します。パレットは、全キャラクターぶんを一人ずつ読み込んでキャラごとに保存し、
@@ -1230,61 +1291,68 @@
     refreshScanButton.disabled = true;
     openChatPaletteButton.disabled = true;
     refreshChatPaletteButton.disabled = true;
+    // CCFOLIA本体側を操作して取得するので、拡張チャットのオーバーレイが開いていたら一時的に隠します。
+    await pauseChatOverlay();
     try {
       status.textContent = 'キャラクター情報を取得しています…';
-      const result = await requestTimeout(
-        chrome.runtime.sendMessage({ type: 'CCFOLIA_ACQUIRE_CHARACTERS' }), 300, 'キャラクター情報の取得'
-      );
-      if (!result?.ok) throw new Error(result?.error || 'キャラクター情報を取得できませんでした。');
-      storeAcquiredCharacters(result.characters);
+      // キャラ情報の取得に失敗しても、パレット・シーンの取得は続けます。
+      // （パレットの人数ぶんの走査は、キャラクター選択メニューの候補からも実行できるため。）
+      try {
+        const result = await requestTimeout(
+          chrome.runtime.sendMessage({ type: 'CCFOLIA_ACQUIRE_CHARACTERS' }), 300, 'キャラクター情報の取得'
+        );
+        if (!result?.ok) throw new Error(result?.error || 'キャラクター情報を取得できませんでした。');
+        storeAcquiredCharacters(result.characters);
+      } catch (reason) {
+        console.error('[CCFOLIA ステータス変更]', reason);
+        chatStatus.textContent = `キャラクター情報: ${reason.message}`;
+      }
       const characterCount = acquiredCharacters.length;
       let paletteCount = null;
       let paletteCharacters = null;
       let sceneCount = null;
       if (force) {
-        // 再走査: 全キャラクターぶんのパレットを取得してキャラごとに保存します。
+        // 再走査: 「キャラクター選択」メニューで選べるキャラを順に選び、選ぶたびに
+        // チャットパレット（ListAltIconのボタン）を開いて読み込みます。
         chatPalettePanel.hidden = false;
         chatPaletteItems.replaceChildren();
         chatPaletteStatus.textContent = '全キャラクターのチャットパレットを取得しています…';
+        const originalName = speakerCharacterName();
+        let items = {};
+        let failed = 0;
         try {
-          const originalName = speakerCharacterName();
-          const names = acquiredCharacters.map((character) => character.name).filter(Boolean);
-          const items = {};
-          let failed = 0;
-          for (const name of names) {
-            try {
-              // 各工程に打ち切りを付け、CCFOLIA側が応答しなくても全体が固まらないようにします。
-              await requestTimeout(sendRequest('CCFOLIA_CHAT_SELECT_CHARACTER', { name, key: '' }), 30, `キャラクター「${name}」への切替`);
-              const palette = await requestTimeout(sendRequest('CCFOLIA_CHAT_PALETTE'), 180, `「${name}」のチャットパレット取得`);
-              if (palette?.characterName && Array.isArray(palette?.entries)) items[palette.characterName] = palette.entries;
-            } catch (reason) {
-              failed += 1;
-              console.error('[CCFOLIA ステータス変更]', reason);
-              chatStatus.textContent = `パレット取得: ${reason.message}`;
-            }
-          }
-          if (names.length) {
-            chatPaletteMap = { ...chatPaletteMap, ...items };
-            savePaletteMap();
-          }
-          // 元の発言者へ戻します。
-          if (originalName) {
-            try {
-              await requestTimeout(sendRequest('CCFOLIA_CHAT_SELECT_CHARACTER', { name: originalName, key: '' }), 30, '元の発言者への復帰');
-            } catch (reason) {
-              console.error('[CCFOLIA ステータス変更]', reason);
-            }
-          }
-          syncPaletteEntries();
-          renderChatPalette();
-          const values = Object.values(chatPaletteMap);
-          paletteCharacters = Object.keys(chatPaletteMap).length;
-          paletteCount = values.reduce((sum, entries) => sum + entries.length, 0);
-          if (failed > 0) chatStatus.textContent = `パレット: ${failed}キャラの取得に失敗しました。`;
+          const scan = await requestTimeout(
+            sendRequest('CCFOLIA_CHAT_PALETTE_SCAN_ALL'), 600, '全キャラクターのチャットパレット取得'
+          );
+          if (!scan?.ok) throw new Error(scan?.error || 'パレットを走査できませんでした。');
+          items = scan.items ?? {};
+          failed = scan.failed ?? 0;
         } catch (reason) {
+          // 巡回方式に失敗したときは、従来どおり名前を指定して切り替える方式で読み込みます。
           console.error('[CCFOLIA ステータス変更]', reason);
-          chatStatus.textContent = `チャットパレット: ${reason.message}`;
+          chatStatus.textContent = '選択メニューの巡回でパレットを取得できなかったため、名前指定で読み込みます。';
+          const fallback = await acquirePalettesPerName();
+          items = fallback.items;
+          failed = fallback.failed;
         }
+        if (Object.keys(items).length) {
+          chatPaletteMap = { ...chatPaletteMap, ...items };
+          savePaletteMap();
+        }
+        // 元の発言者へ戻します（content側でも戻すため、呼び出しは二重になっても害はありません）。
+        if (originalName) {
+          try {
+            await requestTimeout(sendRequest('CCFOLIA_CHAT_SELECT_CHARACTER', { name: originalName, key: '' }), 30, '元の発言者への復帰');
+          } catch (reason) {
+            console.error('[CCFOLIA ステータス変更]', reason);
+          }
+        }
+        syncPaletteEntries();
+        renderChatPalette();
+        const values = Object.values(chatPaletteMap);
+        paletteCharacters = Object.keys(chatPaletteMap).length;
+        paletteCount = values.reduce((sum, entries) => sum + entries.length, 0);
+        if (failed > 0) chatStatus.textContent = `パレット: ${failed}キャラの取得に失敗しました。`;
       } else if (!chatPaletteEntries.length) {
         chatPalettePanel.hidden = false;
         chatPaletteItems.replaceChildren();
@@ -1314,8 +1382,9 @@
       } catch {
         // 閉じ損ねても処理は続けます（Escapeなど個別の閉じ処理は各取得側でも行っています）。
       }
-      await refreshChatState({ force: true, includeCharacters: true });
+      // キャラクター選択メニューの読み取りはチャットの入力欄で行うため、先に開いておきます。
       await requestTimeout(sendRequest('CCFOLIA_CHAT_OPEN_DRAWER'), 10, 'チャットウィンドウを開く');
+      await refreshChatState({ force: true, includeCharacters: true });
       const paletteText = paletteCount !== null
         ? `、パレット${paletteCharacters && paletteCharacters > 0 ? `${paletteCharacters}キャラ分` : ''}${paletteCount}件`
         : '';
@@ -1324,6 +1393,8 @@
       console.error('[CCFOLIA ステータス変更]', reason);
       status.textContent = reason instanceof Error ? reason.message : String(reason);
     } finally {
+      // 先にオーバーレイを元に戻してから、制御ウィンドウ側の後片付けをします。
+      await resumeChatOverlay();
       refreshScanButton.disabled = false;
       openChatPaletteButton.disabled = false;
       refreshChatPaletteButton.disabled = false;
@@ -1380,7 +1451,13 @@
   const ensureSceneEntries = async () => {
     if (sceneEntries.length) return sceneEntries;
     chatStatus.textContent = 'シーン一覧を取得しています…';
-    await fetchSceneEntries();
+    // シーン一覧の取得はCCFOLIA本体側のパネルを操作するので、オーバーレイを一時的に隠します。
+    await pauseChatOverlay();
+    try {
+      await fetchSceneEntries();
+    } finally {
+      await resumeChatOverlay();
+    }
     chatStatus.textContent = '';
     return sceneEntries;
   };
@@ -1392,6 +1469,8 @@
     chatPaletteStatus.textContent = 'パレットを読み込んでいます…';
     chatPalettePanel.hidden = false;
     chatPaletteItems.replaceChildren();
+    // CCFOLIA本体側のパレットを操作して取得するので、オーバーレイを一時的に隠します。
+    await pauseChatOverlay();
     try {
       await fetchChatPaletteEntries();
       renderChatPalette();
@@ -1399,6 +1478,7 @@
       chatStatus.textContent = reason.message;
       chatPalettePanel.hidden = true;
     } finally {
+      await resumeChatOverlay();
       openChatPaletteButton.disabled = false;
       refreshChatPaletteButton.disabled = false;
     }
