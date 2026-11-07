@@ -41,6 +41,11 @@
   const themeSelect = document.getElementById('theme-select');
   const fontSelect = document.getElementById('font-select');
   const fontSizeSelect = document.getElementById('font-size-select');
+  const logSearchInput = document.getElementById('log-search');
+  const logSearchCount = document.getElementById('log-search-count');
+  const settingsExportButton = document.getElementById('settings-export');
+  const settingsImportButton = document.getElementById('settings-import');
+  const settingsIoJson = document.getElementById('settings-io-json');
   const THEME_STORAGE_KEY = 'ccfolia-theme-v1';
   const FONT_STORAGE_KEY = 'ccfolia-font-v1';
   const FONT_SIZE_STORAGE_KEY = 'ccfolia-font-size-v1';
@@ -136,6 +141,81 @@
 
   let acquiredCharacters = readStoredCharacters();
   let latestChatState = null;
+  // チャット全文の保存。一度でも「見えた or 届いた」メッセージをタブごとに蓄積します。
+  // CCFOLIAのログ画面は表示分しかDOMに持たないため、過去に見た分もこの保存から遡って閲覧できます。
+  const FULL_LOG_STORAGE_KEY = 'ccfolia-full-log-v1';
+  const FULL_LOG_LIMIT_PER_TAB = 2000; // 1タブぶんに保管する上限。これを超えると古いものから抜きます。
+  let fullLogSaveTimer = null;
+  const readStoredFullLog = () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(FULL_LOG_STORAGE_KEY) || 'null');
+      if (!stored || typeof stored !== 'object') return new Map();
+      return new Map(Object.entries(stored)
+        .filter(([, list]) => Array.isArray(list))
+        .map(([key, list]) => [key, list.filter((message) => message && typeof message === 'object')]));
+    } catch {
+      return new Map();
+    }
+  };
+  const fullLogByTab = readStoredFullLog();
+  // 連続保存を防ぐため、書き込みは多少遅延させます。失敗してもメモリ上は動き続けます。
+  const saveFullLog = () => {
+    clearTimeout(fullLogSaveTimer);
+    fullLogSaveTimer = window.setTimeout(() => {
+      try {
+        const payload = {};
+        for (const [key, list] of fullLogByTab) {
+          payload[key] = list.length > FULL_LOG_LIMIT_PER_TAB ? list.slice(-FULL_LOG_LIMIT_PER_TAB) : list;
+        }
+        localStorage.setItem(FULL_LOG_STORAGE_KEY, JSON.stringify(payload));
+      } catch {
+        // 容量上限などで保存できなくても、セッション中はメモリだけで機能します。
+      }
+    }, 1500);
+  };
+  // 同じメッセージの判定キー。ログには同一内容の行が並ぶことがあるため、
+  // 発言者・日付・本文の組み合わせで重複を見ます（見た目上の重複は1つに圧縮されます）。
+  const messageKey = (message) => `${message?.speaker ?? ''}\u0000${message?.date ?? ''}\u0000${message?.text ?? ''}`;
+  // 蓄積済みのログに、今回読めた行を順序を保ったまま取り込みます。
+  // 読めるのは直近の行だけなので、まず「既存と一致する行」を境界として、
+  // 境界より新しい未知の行は末尾に足し、境界より古い未知の行はさかのぼる位置に挿入します。
+  const mergeLogMessages = (stored, incoming) => {
+    const result = [...stored];
+    if (!result.length) {
+      const seen = new Set();
+      for (const message of incoming ?? []) {
+        if (!message) continue;
+        const key = messageKey(message);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(message);
+      }
+      return result;
+    }
+    const positionByKey = new Map(result.map((message, index) => [messageKey(message), index]));
+    let insertAfterKey = null; // nullのあいだは「末尾より後」を意味します（＝日付がこれより新しい行へ）
+    for (let i = (incoming ?? []).length - 1; i >= 0; i -= 1) {
+      const message = incoming[i];
+      if (!message) continue;
+      const key = messageKey(message);
+      if (positionByKey.has(key)) {
+        insertAfterKey = key;
+        continue;
+      }
+      // 未知の行。直前に処理した行の前へ入れます。
+      const base = insertAfterKey === null ? result.length : positionByKey.get(insertAfterKey);
+      result.splice(base, 0, message);
+      for (const [existingKey, index] of positionByKey) {
+        if (index >= base) positionByKey.set(existingKey, index + 1);
+      }
+      positionByKey.set(key, base);
+      insertAfterKey = key;
+    }
+    return result;
+  };
+  // タブを切り替えている最中は、CCFOLIA側の旧タブの行が一瞬届くことがあるため
+  // 全文への取り込みを短いあいだ止めます（間違ったタブの行が混ざるのを防ぎます）。
+  let tabMergeGuarded = false;
   let lastUnreadKey = '';
   // 選択中のチャットタブ（インデックスの文字列。null なら未取得）。
   // CCFOLIA側の状態（tab.selected）と、ボタンを押したときの即時反映の両方を拾います。
@@ -339,11 +419,16 @@
       tab.setAttribute('aria-selected', tab === button ? 'true' : 'false');
     }
     updateChatTabIndicator();
+    // 切替の確定までの間、旧タブの行が一瞬届いても全文へ混ぜないようにします。
+    tabMergeGuarded = true;
     try {
       await sendRequest('CCFOLIA_CHAT_SELECT_TAB', { index });
       await refreshChatState();
     } catch (reason) {
       chatStatus.textContent = reason.message;
+    } finally {
+      // 取り込みガードを少し遅れて解除します（CCFOLIA側の再描画が確定してから）。
+      window.setTimeout(() => { tabMergeGuarded = false; }, 600);
     }
   });
 
@@ -524,6 +609,11 @@
     flushBuffer(inSegment);
   };
 
+  // ログ検索。発言者名・本文を部分一致で絞り込みます（スペース区切りの複数語のAND一致）。
+  let logSearchQuery = '';
+  const messageMatchesLogSearch = (message, query) => query.split(/\s+/).filter(Boolean)
+    .every((word) => `${message.speaker ?? ''}\n${message.text ?? ''}`.toLocaleLowerCase().includes(word.toLocaleLowerCase()));
+
   const renderChatState = (chatState) => {
     latestChatState = chatState;
     const avatarBySpeaker = new Map();
@@ -571,7 +661,32 @@
 
     const previousScrollBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 48;
     chatLog.replaceChildren();
-    for (const message of chatState.messages ?? []) {
+    // 蓄積した全文を表示のかたちに取り込みます。遡って全部見られるようにするためです。
+    // 初回（まだ蓄積がない状態）は「いま読めた行」を蓄積の起点にします。
+    // 以降は、既存の続きとして届いた新しい行と、さかのぼって読めた古い行を順序を保って足します。
+    const selectedTabEntry = (chatState.tabs ?? []).find((tab) => tab.selected) ?? null;
+    const selectedTabKey = selectedTabEntry !== null && !tabMergeGuarded
+      ? String(selectedTabEntry.index)
+      : null;
+    let logMessages = chatState.messages ?? [];
+    if (selectedTabKey !== null) {
+      const previousFull = fullLogByTab.get(selectedTabKey) ?? [];
+      const merged = mergeLogMessages(previousFull, logMessages);
+      if (merged.length !== previousFull.length) {
+        fullLogByTab.set(
+          selectedTabKey,
+          merged.length > FULL_LOG_LIMIT_PER_TAB ? merged.slice(-FULL_LOG_LIMIT_PER_TAB) : merged
+        );
+        saveFullLog();
+      }
+      logMessages = merged;
+    }
+    // 検索語があるときはログ項目を絞り込み、ヒット数を検索窓の横に表示します。
+    const searchWords = logSearchQuery.split(/\s+/).filter(Boolean);
+    let shownMessageCount = 0;
+    for (const message of logMessages) {
+      if (searchWords.length && !messageMatchesLogSearch(message, logSearchQuery)) continue;
+      shownMessageCount += 1;
       const item = document.createElement('li');
       item.className = 'chat-message';
       const avatarSources = [...new Set([
@@ -613,6 +728,12 @@
       chatLog.append(item);
     }
     if (previousScrollBottom) chatLog.scrollTop = chatLog.scrollHeight;
+    if (logSearchCount) {
+      const totalMessageCount = logMessages.length;
+      logSearchCount.textContent = searchWords.length
+        ? `${shownMessageCount}/${totalMessageCount}件`
+        : '';
+    }
 
     composerSpeakerAvatar.src = chatState.speakerAvatar ?? '';
     composerSpeakerAvatar.hidden = !chatState.speakerAvatar;
@@ -1095,10 +1216,21 @@
     } else {
       if (resetHighlight) {
         commandIndex = 0;
-        // シーン(/s)は現在選択されているシーンの位置に、最初からハイライトを当てます。
-        if (commandMode === 's' && !commandQuery) {
-          const index = commandMatches.findIndex((candidate) => candidate.label === currentSceneName);
-          if (index >= 0) commandIndex = index;
+        // 絞り込み語が空のときだけ「現在位置」から始めます（言葉を入れるとリストが変わるため先頭）。
+        if (!commandQuery) {
+          // チャットタブ(/m)は現在選択中のタブの位置に、最初からハイライトを当てます。
+          if (commandMode === 'm') {
+            let index = commandMatches.findIndex((candidate) => candidate.tab?.selected === true);
+            if (index < 0) {
+              index = commandMatches.findIndex((candidate) => String(candidate.tab?.index ?? '') === String(selectedTabIndex));
+            }
+            if (index >= 0) commandIndex = index;
+          }
+          // シーン(/s)は現在選択されているシーンの位置に、最初からハイライトを当てます。
+          if (commandMode === 's') {
+            const index = commandMatches.findIndex((candidate) => candidate.label === currentSceneName);
+            if (index >= 0) commandIndex = index;
+          }
         }
       } else if (commandIndex >= commandMatches.length) {
         commandIndex = 0;
@@ -1539,10 +1671,53 @@
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     chatInput.focus();
   });
+  // 入力履歴。送信したメッセージを記憶し、↑/↓キーで呼び出します（50件・保存先はlocalStorage）。
+  const INPUT_HISTORY_STORAGE_KEY = 'ccfolia-input-history-v1';
+  const INPUT_HISTORY_LIMIT = 50;
+  const readInputHistory = () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(INPUT_HISTORY_STORAGE_KEY) || 'null');
+      return Array.isArray(stored) ? stored.filter((entry) => typeof entry === 'string') : [];
+    } catch {
+      return [];
+    }
+  };
+  let inputHistory = readInputHistory();
+  // 現在どこまで履歴をさかのぼっているか。-1は「履歴ではなく入力欄そのもの」を指します。
+  let inputHistoryIndex = -1;
+  // 履歴へ入り込む前の入力内容。↓で最新まで戻ったときに復元します。
+  let inputHistoryDraft = '';
+  const rememberInputHistory = (text) => {
+    inputHistoryIndex = -1;
+    inputHistoryDraft = '';
+    // 送信済みの送信順で積みます。直前の履歴と同じ文は記録し直さない（重複を圧縮）。
+    if (!text || text === inputHistory.at(-1)) return;
+    inputHistory.push(text);
+    while (inputHistory.length > INPUT_HISTORY_LIMIT) inputHistory.shift();
+    try {
+      localStorage.setItem(INPUT_HISTORY_STORAGE_KEY, JSON.stringify(inputHistory));
+    } catch {
+      // 保存に失敗しても、セッション内の履歴として機能し続けます。
+    }
+  };
+  // 履歴をたどります。step+:過去へ / step-:未来(入力欄)へ。動けたときだけtrueを返します。
+  const moveInputHistory = (step) => {
+    const next = inputHistoryIndex + step;
+    if (next >= inputHistory.length) return false;
+    if (next < -1) return false;
+    if (inputHistoryIndex === -1) inputHistoryDraft = chatInput.value;
+    inputHistoryIndex = next;
+    chatInput.value = next === -1 ? inputHistoryDraft : inputHistory[next];
+    // キャレットを末尾へ置き、技能パレット・コマンド候補の表示も入力内容に合わせ直します。
+    chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length;
+    chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  };
   sendButton.addEventListener('click', async () => {
     if (sendButton.disabled) return;
     const originalText = chatInput.value;
     if (!originalText.trim()) return;
+    rememberInputHistory(originalText);
     // CCFOLIA側の送信処理を待たず、入力欄を即座にクリアします（失敗時は元の内容に戻します）。
     chatInput.value = '';
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1572,6 +1747,11 @@
   });
   chatInput.addEventListener('input', () => {
     if (!renderCommandSuggestions()) showSkillSuggestions(chatInput.value);
+  });
+  // 検索語が変わったら、最新の状態をもう一度描き直して絞り込みを反映します。
+  logSearchInput?.addEventListener('input', () => {
+    logSearchQuery = logSearchInput.value;
+    if (latestChatState) renderChatState(latestChatState);
   });
 
   // CCFOLIA側でチャットログが変わるたび、ポーリングを待たずに即座に反映します。
@@ -1613,6 +1793,21 @@
       hideCommandSuggestions();
       return;
     }
+    // 入力履歴。コマンド候補の操作中でないとき、↑/↓で送信履歴をたどります。
+    // ↑はキャレットが1行目、↓は最終行のときだけ発動し、複数行入力のカーソル移動を妨げません。
+    if (!commandActive && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+      const value = chatInput.value;
+      const selectionStart = chatInput.selectionStart ?? 0;
+      const selectionEnd = chatInput.selectionEnd ?? 0;
+      const atBoundary = event.key === 'ArrowUp'
+        ? value.slice(0, selectionStart).indexOf('\n') === -1
+        : value.slice(selectionEnd).indexOf('\n') === -1;
+      if (atBoundary) {
+        event.preventDefault();
+        moveInputHistory(event.key === 'ArrowUp' ? 1 : -1);
+        return;
+      }
+    }
     if (event.key !== 'Enter' || event.shiftKey) return;
     event.preventDefault();
     // コマンド入力中（/m /g /c）は候補の実行を優先し、通常のメッセージ送信は行いません。
@@ -1635,6 +1830,58 @@
       chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     } catch (reason) {
       chatStatus.textContent = reason.message;
+    }
+  });
+
+  // 設定のバックアップ。拡張ページが持つ localStorage（テーマ・フォント・alias・パレット・シーン等）と
+  // chrome.storage.local（コマンドマップ・キャラ番号割当・オーバーレイの状態）をJSONで出し入れします。
+  const CHROME_STORAGE_KEYS = ['ccfoliaCommandMap', 'ccfoliaCharacters', 'ccfoliaChatOverlayMode', 'ccfoliaChatOverlayBounds'];
+  settingsExportButton?.addEventListener('click', async () => {
+    try {
+      // localStorage側は拡張機能のキー（ccfoliaで始まるもの）をすべて書き出します。
+      const local = {};
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index);
+        if (key?.startsWith('ccfolia')) local[key] = localStorage.getItem(key);
+      }
+      const storage = await chrome.storage.local.get(CHROME_STORAGE_KEYS);
+      settingsIoJson.value = JSON.stringify({ version: 1, savedAt: new Date().toISOString(), local, storage }, null, 2);
+      settingsIoJson.select();
+      status.textContent = '設定を書き出しました。表示されたテキストをコピーして保管してください。';
+    } catch (reason) {
+      status.textContent = `設定の書き出しに失敗しました: ${reason.message}`;
+    }
+  });
+  settingsImportButton?.addEventListener('click', async () => {
+    let payload = null;
+    try {
+      payload = JSON.parse(settingsIoJson.value);
+    } catch {
+      status.textContent = 'JSONを読み取れませんでした。「書き出す」で作ったテキストを貼り付けてください。';
+      return;
+    }
+    if (!payload || typeof payload !== 'object') {
+      status.textContent = '書き出したテキストが空です。「書き出す」を実行してから試してください。';
+      return;
+    }
+    try {
+      // localStorage側を復元します（ccfoliaで始まるキーのみ・値は文字列のみ）。
+      for (const [key, value] of Object.entries(payload.local ?? {})) {
+        if (key.startsWith('ccfolia') && typeof value === 'string') localStorage.setItem(key, value);
+      }
+      // chrome.storage側を復元します（書き出し時に存在したキーだけ）。
+      const restore = {};
+      const storage = payload.storage;
+      if (storage && typeof storage === 'object') {
+        for (const key of CHROME_STORAGE_KEYS) {
+          if (key in storage) restore[key] = storage[key];
+        }
+      }
+      if (Object.keys(restore).length) await chrome.storage.local.set(restore);
+      status.textContent = '設定を読み込みました。まもなく再読み込みします…';
+      setTimeout(() => window.location.reload(), 800);
+    } catch (reason) {
+      status.textContent = `設定の読み込みに失敗しました: ${reason.message}`;
     }
   });
 

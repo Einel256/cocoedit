@@ -83,9 +83,21 @@
           <ul id="alias-list" class="alias-list" aria-label="登録済みエイリアス"></ul>
           <output id="alias-status" role="status"></output>
         </section>
+        <section class="alias-settings" aria-label="設定のバックアップ">
+          <div class="alias-editor">
+            <strong>設定のバックアップ</strong>
+            <button id="settings-export" type="button">書き出す</button>
+            <button id="settings-import" type="button">読み込む</button>
+          </div>
+          <textarea id="settings-io-json" rows="3" placeholder="「書き出す」で設定がここに出ます。コピーして保管してください。読み込むときは貼り付けて「読み込む」を押します。"></textarea>
+        </section>
       </details>
 
       <section class="chat-section" aria-label="ルームチャット">
+        <div class="log-search-row">
+          <input id="log-search" type="search" placeholder="ログを検索（発言者・本文）">
+          <output id="log-search-count" aria-live="polite"></output>
+        </div>
         <ol id="chat-log" aria-live="polite"></ol>
         <div class="chat-toolbar">
           <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="チャットタブ"></div>
