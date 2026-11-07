@@ -1789,6 +1789,24 @@
       host.style.bottom = 'auto';
       host.style.width = `${bounds.width}px`;
       host.style.height = `${bounds.height}px`;
+      // 重ね順: 平常時はダイアログ類（チャットパレットなど）より上に重ねます。
+      // メニュー類（アカウントメニューなどのポップオーバー）が開いている間だけは、
+      // そのメニューより一段下に下げて、メニューが見えるようにします。
+      const popoverPaper = [...document.querySelectorAll('.MuiPopover-paper, .MuiMenu-paper')]
+        .filter(visible).at(-1);
+      if (popoverPaper) {
+        let popoverZ = 0;
+        for (let node = popoverPaper; node && node !== document.body; node = node.parentElement) {
+          const value = Number(getComputedStyle(node).zIndex);
+          if (Number.isFinite(value) && value > 0) {
+            popoverZ = value;
+            break;
+          }
+        }
+        host.style.zIndex = String(popoverZ > 0 ? Math.min(popoverZ - 1, 2147483646) : 2147483646);
+      } else {
+        host.style.zIndex = String(2147483646);
+      }
     };
     document.body.append(host);
     positionChatOverlay();
