@@ -510,6 +510,14 @@
   }, true);
 
   const normalizedText = (element) => (element?.innerText || element?.textContent || '').replace(/\s+/g, ' ').trim();
+  const resolveRoomAssetUrl = (value) => {
+    if (!value) return '';
+    try {
+      return new URL(value, location.href).href;
+    } catch {
+      return value;
+    }
+  };
   const findVisibleChatTextarea = () => [...document.querySelectorAll('textarea[name="text"][placeholder="メッセージを入力"]')]
     .find((textarea) => findChatTextarea(textarea));
   const chatDrawerCloseButton = () => [...document.querySelectorAll('button[aria-label="チャットウィンドウをとじる"]')].find(visible);
@@ -728,11 +736,11 @@
             text = normalizedText(body);
           }
           const avatarImage = item.querySelector('[class*="MuiListItemAvatar"] img.MuiAvatar-img, [class*="MuiListItemAvatar"] img, img[alt="avatar"]');
-          const avatar = avatarImage?.getAttribute('src')
+          const avatar = resolveRoomAssetUrl(avatarImage?.getAttribute('src')
             || avatarImage?.getAttribute('data-src')
             || avatarImage?.currentSrc
             || avatarImage?.src
-            || '';
+            || '');
           return { speaker, date: date?.textContent?.replace(/^\s*-\s*/, '').trim() || '', text, avatar };
         })
         .filter((message) => message.text || message.speaker)
@@ -857,7 +865,7 @@
       tabs,
       messages,
       speakerName: speaker?.value ?? '',
-      speakerAvatar: speakerImage?.currentSrc || speakerImage?.src || '',
+      speakerAvatar: resolveRoomAssetUrl(speakerImage?.currentSrc || speakerImage?.src || ''),
       draftText: findVisibleChatTextarea()?.value ?? '',
       characters,
       diceButtons: [...new Set(diceButtons)]

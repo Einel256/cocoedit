@@ -1122,16 +1122,17 @@
     suggestionHighlightIndex = -1;
   };
 
-  /* /m /g /c /s /a コマンド。fzf風のTab補完で選択します。
-     /m = チャットタブ移動 /g = 技能選択（チャットパレット） /c = キャラ選択 /s = シーン選択 /a = aliasを入力欄に挿入 */
+  /* /m /g /c /s /a /l コマンド。fzf風のTab補完で選択します。
+     /m = チャットタブ移動 /g = 技能選択 /c = キャラ選択 /s = シーン選択 /a = alias /l = 全情報更新 */
   const commandSuggestions = document.getElementById('command-suggestions');
-  let commandMode = null; // 'm' | 'g' | 'c' | 's' | 'a'
+  let commandMode = null; // 'm' | 'g' | 'c' | 's' | 'a' | 'reload'
   let commandMatches = [];
   let commandIndex = 0;
   let commandQuery = null;
-  // 「/m」「/g」「/c」「/s」「/a」の入力をコマンドとして扱います（半角スペースは任意）。
+  // 「/m」「/g」「/c」「/s」「/a」「/l」の入力をコマンドとして扱います（半角スペースは任意）。
   // ただし、本家の「/scene シーン名」コマンドを手入力したときはセレクタに奪わず、そのまま送信させます。
   const parseCommandInput = (value) => {
+    if (/^\/l\s*$/i.test(value)) return { mode: 'reload', query: '' };
     const match = value.match(/^\/([amgcs])(.*)$/);
     if (!match) return null;
     if (match[1] === 's' && value.toLowerCase().startsWith('/scene')) return null;
@@ -1139,6 +1140,7 @@
   };
 
   const commandCandidates = (mode) => {
+    if (mode === 'reload') return [];
     if (mode === 'm') {
       return (latestChatState?.tabs ?? []).map((tab) => ({ label: tab.name, tab }));
     }
@@ -1195,6 +1197,12 @@
     if (!parsed) {
       hideCommandSuggestions();
       return false;
+    }
+    if (parsed.mode === 'reload') {
+      hideCommandSuggestions();
+      commandMode = parsed.mode;
+      commandQuery = parsed.query;
+      return true;
     }
     // モード・絞り込み語が変わったらハイライトを初期位置へ戻します。
     // シーン(/s)は初期位置を「現在のシーン」に合わせ、それ以外は先頭に当てます。
@@ -1270,6 +1278,17 @@
   };
 
   const executeCommand = async () => {
+    if (commandMode === 'reload') {
+      chatInput.value = '';
+      hideCommandSuggestions();
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      try {
+        await updateEverything({ force: true });
+      } finally {
+        focusChatInput();
+      }
+      return;
+    }
     const count = commandMatches.length;
     // シーンは初回に候補が無くても、その場でCCFOLIA側のシーンパネルを開いて取得してから
     // 候補を表示します（自動実行はしないので、候補が見えたらもう一度Enterします）。
