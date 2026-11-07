@@ -229,7 +229,7 @@
       return null;
     }
   };
-  // 発言者（キャラクター）ごとのパレット。「再取得」で全キャラぶん取得すると、
+  // 発言者（キャラクター）ごとのパレット。「更新」で全キャラぶん取得すると、
   // /g や技能パレット表示は現在の発言者に対応した技能だけを出します。
   const PALETTE_MAP_KEY = 'ccfolia-chat-palette-map-v1';
   const readPaletteMap = () => {
@@ -1169,10 +1169,10 @@
 
   const commandEmptyMessage = (mode) => {
     if (mode === 'm') return '一致するチャットタブがありません。';
-    if (mode === 'g') return '一致する技能がありません。「一括取得」やパレットの「再取得」で取得してください。';
+    if (mode === 'g') return '一致する技能がありません。「更新」やパレットの「更新」で取得してください。';
     if (mode === 's') return 'シーン候補がありません。入力欄が空の状態から取得するか、「一括取得」で取得してください。';
     if (mode === 'a') return 'aliasがありません。「設定・キャラクター情報」でaliasを登録してください。';
-    return 'キャラクター候補がありません。「再取得」で候補を取得してください。';
+    return 'キャラクター候補がありません。「更新」で候補を取得してください。';
   };
 
   const hideCommandSuggestions = () => {
@@ -1446,7 +1446,7 @@
     return { items, failed };
   };
 
-  // 「再取得」で、キャラ情報・チャットパレット・シーン・チャットログをまとめて取得します。
+  // 「更新」で、キャラ情報・チャットパレット・シーン・チャットログをまとめて取得します。
   // 保存済みでもパレット・シーンをCCFOLIA側から
   // 必ず取り直します。パレットは、全キャラクターぶんを一人ずつ読み込んでキャラごとに保存し、
   // 元の発言者へ戻します（/g や技能パレットは発言者に対応した技能だけを出せるようになります）。
@@ -1713,7 +1713,34 @@
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     return true;
   };
-  sendButton.addEventListener('click', async () => {
+  const pendingMessages = [];
+  let sendingMessages = false;
+  const sendPendingMessages = async () => {
+    if (sendingMessages) return;
+    sendingMessages = true;
+    try {
+      while (pendingMessages.length) {
+        const message = pendingMessages.shift();
+        try {
+          await sendRequest('CCFOLIA_CHAT_SEND', {
+            text: message.text,
+            ...(message.tabIndex !== null ? { tabIndex: message.tabIndex } : {})
+          });
+          void refreshChatState();
+        } catch (reason) {
+          chatStatus.textContent = reason.message;
+          if (!chatInput.value && pendingMessages.length === 0) {
+            chatInput.value = message.text;
+            chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        }
+      }
+    } finally {
+      sendingMessages = false;
+      if (pendingMessages.length) void sendPendingMessages();
+    }
+  };
+  sendButton.addEventListener('click', () => {
     if (sendButton.disabled) return;
     const originalText = chatInput.value;
     if (!originalText.trim()) return;
@@ -1721,29 +1748,13 @@
     // CCFOLIA側の送信処理を待たず、入力欄を即座にクリアします（失敗時は元の内容に戻します）。
     chatInput.value = '';
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-    sendButton.disabled = true;
-    let failure = null;
-    try {
-      const selectedTab = selectedTabIndex;
-      await sendRequest('CCFOLIA_CHAT_SEND', {
-        text: originalText,
-        ...(selectedTab !== null && selectedTab !== '' ? { tabIndex: Number(selectedTab) } : {})
-      });
-    } catch (reason) {
-      failure = reason;
-    }
-    // 送信が確定した時点で入力を受け付けるようにします。ログの再取得は後処理で行うため、
-    // 完了までボタンを押せなくなる「送信できない時間」を作りません。
-    sendButton.disabled = false;
-    if (failure) {
-      chatStatus.textContent = failure.message;
-      chatInput.value = originalText;
-      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-      chatInput.focus();
-      return;
-    }
+    const selectedTab = selectedTabIndex;
+    pendingMessages.push({
+      text: originalText,
+      tabIndex: selectedTab !== null && selectedTab !== '' ? Number(selectedTab) : null
+    });
     chatInput.focus();
-    void refreshChatState();
+    void sendPendingMessages();
   });
   chatInput.addEventListener('input', () => {
     if (!renderCommandSuggestions()) showSkillSuggestions(chatInput.value);
