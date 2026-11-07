@@ -1329,8 +1329,9 @@
       chatInput.focus();
       return;
     }
+    const selectedMode = commandMode;
     try {
-      if (commandMode === 'm') {
+      if (selectedMode === 'm') {
         await sendRequest('CCFOLIA_CHAT_SELECT_TAB', { index: selected.tab.index });
         chatStatus.textContent = `チャットタブを「${selected.label}」に切り替えました。`;
       } else {
@@ -1340,9 +1341,11 @@
       chatInput.value = '';
       hideCommandSuggestions();
       chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-      await refreshChatState({ force: true, includeCharacters: commandMode === 'c' });
+      await refreshChatState({ force: true, includeCharacters: selectedMode === 'c' });
     } catch (reason) {
       chatStatus.textContent = reason.message;
+    } finally {
+      if (selectedMode === 'c') focusChatInput();
     }
   };
 
@@ -1713,6 +1716,22 @@
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     return true;
   };
+  const focusChatInput = () => {
+    chatInput.focus({ preventScroll: true });
+    chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length;
+  };
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== '/' || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    if (target instanceof Element
+      && target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"]')) return;
+    event.preventDefault();
+    focusChatInput();
+  });
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent || event.data?.type !== 'CCFOLIA_FOCUS_CHAT_INPUT') return;
+    focusChatInput();
+  });
   const pendingMessages = [];
   let sendingMessages = false;
   const sendPendingMessages = async () => {
@@ -1738,6 +1757,7 @@
     } finally {
       sendingMessages = false;
       if (pendingMessages.length) void sendPendingMessages();
+      else focusChatInput();
     }
   };
   sendButton.addEventListener('click', () => {
@@ -1753,7 +1773,6 @@
       text: originalText,
       tabIndex: selectedTab !== null && selectedTab !== '' ? Number(selectedTab) : null
     });
-    chatInput.focus();
     void sendPendingMessages();
   });
   chatInput.addEventListener('input', () => {
@@ -1841,6 +1860,8 @@
       chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     } catch (reason) {
       chatStatus.textContent = reason.message;
+    } finally {
+      focusChatInput();
     }
   });
 

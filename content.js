@@ -1698,6 +1698,22 @@
   let chatOverlayPositionHandler = null;
   // 「再取得」などの間は拡張チャットのオーバーレイを一時的に隠します。隠す期限の時刻で管理します。
   let chatOverlaySuspendedUntil = null;
+  document.addEventListener('keydown', (event) => {
+    if ((event.key !== '/' && event.code !== 'Slash')
+      || event.repeat || event.ctrlKey || event.metaKey || event.altKey
+      || chatOverlayMode !== 'expanded') return;
+    const target = event.target;
+    if (target instanceof Element
+      && target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"]')) return;
+    const overlay = document.getElementById(CHAT_OVERLAY_ID);
+    const iframe = overlay?.shadowRoot?.querySelector('iframe');
+    if (!iframe || overlay.hidden || iframe.hidden) return;
+    event.preventDefault();
+    iframe.contentWindow?.postMessage(
+      { type: 'CCFOLIA_FOCUS_CHAT_INPUT' },
+      new URL(chrome.runtime.getURL('control.html')).origin
+    );
+  }, true);
 
   const findChatPanel = () => {
     const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
