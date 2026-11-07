@@ -204,6 +204,21 @@
   const saveSceneEntries = () => {
     localStorage.setItem(SCENE_STORAGE_KEY, JSON.stringify(sceneEntries));
   };
+  // いま選択されているシーン。/s を開いたときの初期ハイライトに使います。
+  // 一覧の取得時にその場で判定できればそちらを優先し、/s で切り替えたときにも記憶します。
+  const SCENE_CURRENT_KEY = 'ccfolia-current-scene-v1';
+  const readStoredCurrentScene = () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(SCENE_CURRENT_KEY) || 'null');
+      return typeof stored === 'string' ? stored : '';
+    } catch {
+      return '';
+    }
+  };
+  let currentSceneName = readStoredCurrentScene();
+  const saveCurrentScene = () => {
+    localStorage.setItem(SCENE_CURRENT_KEY, JSON.stringify(currentSceneName));
+  };
 
   const syncCommandMap = () => {
     const commandMap = Object.fromEntries((acquiredCharacters ?? [])
@@ -1060,13 +1075,16 @@
       hideCommandSuggestions();
       return false;
     }
-    // モード・絞り込み語が変わったらハイライトを先頭へ戻します。
-    if (parsed.mode !== commandMode || parsed.query !== commandQuery) commandIndex = 0;
+    // モード・絞り込み語が変わったらハイライトを初期位置へ戻します。
+    // シーン(/s)は初期位置を「現在のシーン」に合わせ、それ以外は先頭に当てます。
+    let resetHighlight = parsed.mode !== commandMode || parsed.query !== commandQuery;
     commandMode = parsed.mode;
     commandQuery = parsed.query;
     // 絞り込みはスペース区切りの複数語のAND一致（fzf風）です。
-    commandMatches = commandCandidates(commandMode)
-      .filter((candidate) => matchesCommandQuery(candidate.label, parsed.query));
+    const candidates = commandCandidates(commandMode);
+    const filtered = candidates.filter((candidate) => matchesCommandQuery(candidate.label, parsed.query));
+    if (commandIndex >= filtered.length || commandIndex < 0) resetHighlight = true;
+    commandMatches = filtered;
     commandSuggestions.replaceChildren();
     if (!commandMatches.length) {
       const empty = document.createElement('span');
@@ -1075,7 +1093,16 @@
       commandSuggestions.append(empty);
       commandIndex = -1;
     } else {
-      if (commandIndex >= commandMatches.length) commandIndex = 0;
+      if (resetHighlight) {
+        commandIndex = 0;
+        // シーン(/s)は現在選択されているシーンの位置に、最初からハイライトを当てます。
+        if (commandMode === 's' && !commandQuery) {
+          const index = commandMatches.findIndex((candidate) => candidate.label === currentSceneName);
+          if (index >= 0) commandIndex = index;
+        }
+      } else if (commandIndex >= commandMatches.length) {
+        commandIndex = 0;
+      }
       commandMatches.forEach((candidate, index) => {
         const button = document.createElement('button');
         button.type = 'button';
@@ -1117,7 +1144,9 @@
     if (commandMode === 's' && !sceneEntries.length) {
       try {
         await ensureSceneEntries();
-        commandIndex = 0;
+        // 取得できた一覧にあるなら、現在のシーンの位置からハイライトを始めます。
+        const index = commandCandidates('s').findIndex((candidate) => candidate.label === currentSceneName);
+        commandIndex = Math.max(0, index);
         renderCommandSuggestions();
       } catch (reason) {
         chatStatus.textContent = reason.message;
@@ -1155,6 +1184,9 @@
       chatInput.dispatchEvent(new Event('input', { bubbles: true }));
       try {
         await sendRequest('CCFOLIA_CHAT_SEND', { text: commandText });
+        // 次に /s を開いたときの初期ハイライト用に、選択したシーンを記憶します。
+        currentSceneName = selected.label;
+        saveCurrentScene();
         chatStatus.textContent = `シーンを「${selected.label}」に切り替えました。`;
       } catch (reason) {
         chatStatus.textContent = reason.message;
@@ -1445,6 +1477,11 @@
     const result = await sendRequest('CCFOLIA_SCENE_LIST');
     sceneEntries = result.entries ?? [];
     saveSceneEntries();
+    // 一覧取得時に現在のシーンも判断できれば、そちらを優先して記憶します。
+    if (typeof result.current === 'string' && result.current) {
+      currentSceneName = result.current;
+      saveCurrentScene();
+    }
     return sceneEntries;
   };
   // /s で候補が出ないときに、最初の1回だけ自動で取得します。

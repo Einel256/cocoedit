@@ -1163,13 +1163,32 @@
       return count;
     });
 
+  // シーンカードが現在のシーンかどうかを、複数の手がかりから推定します。
+  // 手がかりを返します（どの根拠で判断したかのログ用）。推定できなければnullです。
+  //   1) 選択状態（.Mui-selected / aria-pressed="true"）
+  //   2) 再生中のシーンだけが「停止」になるボタンラベルや StopIcon
+  //   3) 「再生中」「表示中」の表記
+  const detectActiveSceneCard = (card) => {
+    if (card.querySelector('.Mui-selected')) return '選択状態';
+    if (card.querySelector('[aria-pressed="true"]')) return '押下状態';
+    for (const button of card.querySelectorAll('button')) {
+      if (/停止/.test(button.getAttribute('aria-label') ?? '')) return '「停止」ボタン';
+      if (button.querySelector('[data-testid="StopIcon"]')) return '停止アイコン';
+    }
+    if (/再生中|表示中/.test(card.textContent ?? '')) return '表記';
+    return null;
+  };
+
   // シーン一覧の読み取り。シーンパネルもチャットパレットと同じ .MuiDialogContent-root.scrollable-list を
   // 使うため、走査ロジックを流用します。カード（.MuiCard-root）内の最初の見出し
   // （.MuiTypography-caption）がシーン名で、その次がBGMファイル名です。
   // 同名のシーン（「新しいシーン」が複数など）も読み取り数を正すため、カード単位で重複保持します。
   const readSceneEntries = async (root) => {
     const seenCards = new WeakSet();
-    return await scanScrollableList(root, (scrollableList, entries) => {
+    const entries = [];
+    let current = null;
+    let currentReason = null;
+    await scanScrollableList(root, (scrollableList) => {
       let count = 0;
       for (const card of scrollableList.querySelectorAll('.MuiCard-root')) {
         count += 1;
@@ -1177,10 +1196,21 @@
         seenCards.add(card);
         const caption = card.querySelector('.MuiTypography-caption');
         const text = normalizedText(caption);
-        if (text) entries.push(text);
+        if (!text) continue;
+        entries.push(text);
+        if (current === null) {
+          const reason = detectActiveSceneCard(card);
+          if (reason) {
+            current = text;
+            currentReason = reason;
+          }
+        }
       }
       return count;
     });
+    if (current) log(`現在のシーンを「${current}」（${currentReason}）と推定しました。`);
+    else log('一覧から現在のシーンを推定できませんでした。');
+    return { entries, current: current ?? null };
   };
 
   const openSceneListPanel = async () => withChatDrawer(async () => {
@@ -1211,8 +1241,8 @@
     }
 
     try {
-      const entries = await readSceneEntries(root);
-      return { ok: true, entries };
+      const scan = await readSceneEntries(root);
+      return { ok: true, entries: scan.entries, current: scan.current };
     } finally {
       // 走査が終わったらすぐ閉じる: まず「閉じる」ボタンを押し、短い間隔で閉じたか確認します。
       // MUI製なので pressElement で pointer/mouse付きで押します。残っていたらEscape→外側クリック
