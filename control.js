@@ -28,6 +28,7 @@
   const aliasButtons = document.getElementById('alias-buttons');
   const aliasNameInput = document.getElementById('alias-name');
   const aliasTextInput = document.getElementById('alias-text');
+  const aliasEditorModeButton = document.getElementById('alias-editor-mode');
   const aliasAddButton = document.getElementById('alias-add');
   const aliasCancelButton = document.getElementById('alias-cancel');
   const aliasList = document.getElementById('alias-list');
@@ -48,9 +49,32 @@
   const THEME_STORAGE_KEY = 'ccfolia-theme-v1';
   const FONT_STORAGE_KEY = 'ccfolia-font-v1';
   const FONT_SIZE_STORAGE_KEY = 'ccfolia-font-size-v1';
+  const ALIAS_EDITOR_MODE_STORAGE_KEY = 'ccfolia-alias-editor-mode-v1';
   const CHARACTER_STORAGE_KEY = 'ccfolia-status-characters-v1';
   const PALETTE_STORAGE_KEY = 'ccfolia-chat-palette-v1';
   const ALIAS_STORAGE_KEY = 'ccfolia-alias-v1';
+  let aliasEditorLarge = false;
+  try {
+    aliasEditorLarge = localStorage.getItem(ALIAS_EDITOR_MODE_STORAGE_KEY) === 'large';
+  } catch (reason) {
+    console.error('エイリアス入力欄の表示モードを読み込めませんでした。', reason);
+  }
+  const applyAliasEditorMode = (isLarge, persist = false) => {
+    aliasEditorLarge = isLarge;
+    aliasTextInput.classList.toggle('is-large', isLarge);
+    aliasEditorModeButton.textContent = isLarge ? '通常サイズに戻す' : '大きくする';
+    aliasEditorModeButton.setAttribute('aria-pressed', String(isLarge));
+    if (!persist) return;
+    try {
+      localStorage.setItem(ALIAS_EDITOR_MODE_STORAGE_KEY, isLarge ? 'large' : 'normal');
+      aliasStatus.textContent = '';
+    } catch (reason) {
+      console.error('エイリアス入力欄の表示モードを保存できませんでした。', reason);
+      aliasStatus.textContent = '表示モードを保存できませんでした。';
+    }
+  };
+  aliasEditorModeButton.addEventListener('click', () => applyAliasEditorMode(!aliasEditorLarge, true));
+  applyAliasEditorMode(aliasEditorLarge);
   settingsToggle?.addEventListener('click', () => {
     if (!setupSection) return;
     setupSection.open = !setupSection.open;
@@ -837,6 +861,33 @@
   const messageMatchesLogSearch = (message, query) => query.split(/\s+/).filter(Boolean)
     .every((word) => `${message.speaker ?? ''}\n${message.text ?? ''}`.toLocaleLowerCase().includes(word.toLocaleLowerCase()));
 
+  let aliasExecutionStatus = '';
+  const renderAliasExecutionStatus = () => {
+    chatLog.querySelector('.alias-execution-message')?.remove();
+    if (!aliasExecutionStatus) return;
+    const item = document.createElement('li');
+    item.className = 'chat-message alias-execution-message';
+    const spacer = document.createElement('span');
+    spacer.className = 'message-avatar-placeholder';
+    const content = document.createElement('div');
+    content.className = 'message-content';
+    const header = document.createElement('div');
+    header.className = 'message-header';
+    const speaker = document.createElement('strong');
+    speaker.textContent = '実行中';
+    header.append(speaker);
+    const text = document.createElement('p');
+    text.textContent = aliasExecutionStatus;
+    content.append(header, text);
+    item.append(spacer, content);
+    chatLog.append(item);
+  };
+  const setAliasExecutionStatus = (status) => {
+    const wasAtBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 48;
+    aliasExecutionStatus = status;
+    renderAliasExecutionStatus();
+    if (wasAtBottom) chatLog.scrollTop = chatLog.scrollHeight;
+  };
   const renderChatState = (chatState) => {
     if (expectedRoomPath && chatState.roomPath !== expectedRoomPath) return;
     expectedRoomPath = chatState.roomPath ?? expectedRoomPath;
@@ -954,6 +1005,7 @@
       item.append(content);
       chatLog.append(item);
     }
+    renderAliasExecutionStatus();
     if (previousScrollBottom) chatLog.scrollTop = chatLog.scrollHeight;
     if (logSearchCount) {
       const totalMessageCount = logMessages.length;
@@ -1188,11 +1240,11 @@
     return { count, text: match[2].trim() };
   };
   const isDiceFormula = (formula) => /^(?:\d+)?[dD]\d+(?:[+-](?:(?:\d+)?[dD]\d+|\d+))*$/.test(formula);
-  const runAliasEntry = (index) => {
+  const runAliasEntry = (index, { front = false, depth = 0, nested = false } = {}) => {
     const entry = aliasEntries[index];
     if (!entry) return;
     // 更新中などで送信できないときは、内容だけいったん入力欄に残します（押し直せば送られます）。
-    if (sendButton.disabled) {
+    if (sendButton.disabled && !nested) {
       chatInput.value = entry.text;
       chatInput.dispatchEvent(new Event('input', { bubbles: true }));
       return;
@@ -1237,10 +1289,25 @@
         hasPendingDelay = false;
         continue;
       }
-      const sceneCommand = line.match(/^\/s(.*)$/i);
+      const sceneCommand = line.match(/^\/s(\d+)$/i);
       if (sceneCommand && sceneCommand[1].trim() && !/^\/scene(?:\s|$)/i.test(line)) {
         messages.push({ sceneQuery: sceneCommand[1].trim(), aliasContext, delayBefore: delayBeforeNext });
       } else {
+        const aliasCommand = line.match(/^\/([cta])(?:\s+(.*)|([^\s].*))?$/i);
+        if (aliasCommand) {
+          messages.push({
+            aliasCommand: aliasCommand[1].toLowerCase(),
+            commandQuery: (aliasCommand[2] ?? aliasCommand[3] ?? '').trim(),
+            compactCommand: Boolean(aliasCommand[3]),
+            commandText: line,
+            aliasContext,
+            aliasDepth: depth,
+            delayBefore: delayBeforeNext
+          });
+          delayBeforeNext = 0;
+          hasPendingDelay = false;
+          continue;
+        }
         const repeated = parseRepeatCommand(line);
         if (repeated?.error) {
           aliasStatus.textContent = repeated.error;
@@ -1268,14 +1335,18 @@
     }
     if (!messages.length) return;
     hideCommandSuggestions();
-    const selectedTab = selectedTabIndex;
+    setAliasExecutionStatus(`エイリアス「${entry.name}」を実行しています。`);
+    const queuedMessages = [];
     for (const message of messages) {
       rememberInputHistory(message.historyText ?? message.text);
-      pendingMessages.push({
+      queuedMessages.push({
         ...message,
-        tabIndex: selectedTab !== null && selectedTab !== '' ? Number(selectedTab) : null
+        aliasDepth: message.aliasDepth ?? depth,
+        tabIndex: null
       });
     }
+    if (front) pendingMessages.unshift(...queuedMessages);
+    else pendingMessages.push(...queuedMessages);
     chatInput.value = '';
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     void sendPendingMessages();
@@ -1283,7 +1354,7 @@
   const renderAliasEditor = () => {
     if (aliasEditingIndex >= 0 && !aliasEntries[aliasEditingIndex]) aliasEditingIndex = -1;
     aliasList.replaceChildren();
-    aliasAddButton.textContent = aliasEditingIndex >= 0 ? '更新' : '追加';
+    aliasAddButton.textContent = aliasEditingIndex >= 0 ? '保存' : '追加';
     aliasCancelButton.hidden = aliasEditingIndex < 0;
     for (const [index, entry] of aliasEntries.entries()) {
       const row = document.createElement('li');
@@ -1385,9 +1456,9 @@
     const buttonVisible = (aliasEditingIndex >= 0 && aliasEntries[aliasEditingIndex]
       ? isAliasButtonVisible(aliasEntries[aliasEditingIndex])
       : existingIndex >= 0 ? isAliasButtonVisible(aliasEntries[existingIndex]) : true);
-    if (aliasEditingIndex >= 0 && aliasEntries[aliasEditingIndex]) {
+    const isEditing = aliasEditingIndex >= 0 && aliasEntries[aliasEditingIndex];
+    if (isEditing) {
       aliasEntries[aliasEditingIndex] = { name, text, buttonVisible };
-      resetAliasEditor();
     } else if (existingIndex >= 0) {
       // 同名のaliasがあるときは上書きします。
       aliasEntries[existingIndex] = { name, text, buttonVisible };
@@ -1395,9 +1466,11 @@
       aliasEntries.push({ name, text, buttonVisible: true });
     }
     saveAliasEntries();
-    aliasStatus.textContent = `alias「${name}」を登録しました。`;
+    aliasStatus.textContent = isEditing
+      ? `alias「${name}」を保存しました。`
+      : `alias「${name}」を登録しました。`;
     renderAliasEditor();
-    resetAliasEditor();
+    if (!isEditing) resetAliasEditor();
     renderAliasButtons();
   });
   aliasCancelButton.addEventListener('click', () => {
@@ -2242,6 +2315,66 @@
             } else {
               await waitForDiceResult(message.rollFormula, previousSignatures);
             }
+          } else if (message.aliasCommand) {
+            const query = expandAliasVariables(message.commandQuery, message.aliasContext);
+            if (!query) throw new Error(`/${message.aliasCommand} の後に対象名を入力してください。`);
+            const sendUnmatchedCompactCommand = async () => {
+              if (!message.compactCommand) return false;
+              await sendRequest('CCFOLIA_CHAT_SEND', {
+                text: expandAliasVariables(message.commandText, message.aliasContext)
+              });
+              return true;
+            };
+            if (message.aliasCommand === 'a') {
+              const matches = aliasEntries
+                .map((entry, index) => ({ entry, index }))
+                .filter(({ entry }) => matchesCommandQuery(entry.name, query));
+              const selected = matches.find(({ entry }) => entry.name.toLocaleLowerCase() === query.toLocaleLowerCase())
+                ?? matches[0];
+              if (!selected) {
+                if (!(await sendUnmatchedCompactCommand())) {
+                  throw new Error(`「${query}」に一致するエイリアスがありません。`);
+                }
+              } else {
+                if ((message.aliasDepth ?? 0) >= 20) throw new Error('エイリアス呼び出しが深すぎます（最大20段）。');
+                runAliasEntry(selected.index, {
+                  front: true,
+                  depth: (message.aliasDepth ?? 0) + 1,
+                  nested: true
+                });
+              }
+            } else if (message.aliasCommand === 'c') {
+              const characters = latestChatState?.characters ?? [];
+              const matches = characters.filter((character) =>
+                matchesCommandQuery(character.name || `キャラクター${character.index + 1}`, query)
+              );
+              const selected = matches.find((character) =>
+                (character.name || `キャラクター${character.index + 1}`).toLocaleLowerCase() === query.toLocaleLowerCase()
+              ) ?? matches[0];
+              if (!selected) {
+                if (!(await sendUnmatchedCompactCommand())) {
+                  throw new Error(`「${query}」に一致するキャラクターがありません。`);
+                }
+              } else {
+                await sendRequest('CCFOLIA_CHAT_SELECT_CHARACTER', { name: selected.name, key: selected.key });
+                await refreshChatState({ force: true, includeCharacters: true });
+                chatStatus.textContent = `キャラクターを「${selected.name}」に切り替えました。`;
+              }
+            } else {
+              const tabs = latestChatState?.tabs ?? [];
+              const matches = tabs.filter((tab) => matchesCommandQuery(tab.name, query));
+              const selected = matches.find((tab) => tab.name.toLocaleLowerCase() === query.toLocaleLowerCase())
+                ?? matches[0];
+              if (!selected) {
+                if (!(await sendUnmatchedCompactCommand())) {
+                  throw new Error(`「${query}」に一致するチャットタブがありません。`);
+                }
+              } else {
+                await sendRequest('CCFOLIA_CHAT_SELECT_TAB', { index: selected.index });
+                await refreshChatState({ force: true });
+                chatStatus.textContent = `チャットタブを「${selected.name}」に切り替えました。`;
+              }
+            }
           } else if (message.sceneQuery !== undefined) {
             if (!sceneEntries.length) await ensureSceneEntries();
             const query = message.aliasContext
@@ -2275,7 +2408,10 @@
     } finally {
       sendingMessages = false;
       if (pendingMessages.length) void sendPendingMessages();
-      else focusChatInput();
+      else {
+        setAliasExecutionStatus('');
+        focusChatInput();
+      }
     }
   };
   sendButton.addEventListener('click', () => {
