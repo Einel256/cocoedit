@@ -26,7 +26,6 @@
   const skillSuggestions = document.getElementById('skill-suggestions');
   const diceShortcuts = document.getElementById('dice-shortcuts');
   const aliasButtons = document.getElementById('alias-buttons');
-  const aliasButtonsToggle = document.getElementById('alias-buttons-toggle');
   const aliasNameInput = document.getElementById('alias-name');
   const aliasTextInput = document.getElementById('alias-text');
   const aliasAddButton = document.getElementById('alias-add');
@@ -52,7 +51,6 @@
   const CHARACTER_STORAGE_KEY = 'ccfolia-status-characters-v1';
   const PALETTE_STORAGE_KEY = 'ccfolia-chat-palette-v1';
   const ALIAS_STORAGE_KEY = 'ccfolia-alias-v1';
-  const ALIAS_BUTTONS_VISIBLE_KEY = 'ccfolia-alias-buttons-visible-v1';
   settingsToggle?.addEventListener('click', () => {
     if (!setupSection) return;
     setupSection.open = !setupSection.open;
@@ -1179,24 +1177,6 @@
       aliasButtons.append(button);
     }
   };
-  // aliasボタン列は既定で非表示。設定の「ボタン列：表示／非表示」で切り替えます（設定は保存されます）。
-  let aliasButtonsVisible = (() => {
-    try {
-      return JSON.parse(localStorage.getItem(ALIAS_BUTTONS_VISIBLE_KEY) || 'false') === true;
-    } catch {
-      return false;
-    }
-  })();
-  const applyAliasButtonsVisibility = () => {
-    aliasButtonsToggle.textContent = aliasButtonsVisible ? 'ボタン列：表示' : 'ボタン列：非表示';
-    aliasButtonsToggle.setAttribute('aria-pressed', String(aliasButtonsVisible));
-    aliasButtons.hidden = !aliasButtonsVisible;
-  };
-  aliasButtonsToggle.addEventListener('click', () => {
-    aliasButtonsVisible = !aliasButtonsVisible;
-    localStorage.setItem(ALIAS_BUTTONS_VISIBLE_KEY, JSON.stringify(aliasButtonsVisible));
-    applyAliasButtonsVisibility();
-  });
   const runAliasEntry = (index) => {
     const entry = aliasEntries[index];
     if (!entry) return;
@@ -1207,6 +1187,7 @@
       return;
     }
     const messages = [];
+    const aliasContext = { variables: Object.create(null), failedVariables: new Set() };
     let delayBeforeNext = 0;
     let hasPendingDelay = false;
     for (const segment of entry.text.split(';')) {
@@ -1223,11 +1204,33 @@
         hasPendingDelay = true;
         continue;
       }
+      if (/^int\b/i.test(line)) {
+        const declaration = line.match(/^int\s+([A-Za-z_]\w*)\s*=\s*(.+)$/i);
+        if (!declaration) {
+          aliasStatus.textContent = `変数定義「${line}」を読み取れません。例: int a = 1d8;`;
+          return;
+        }
+        const [, variableName, formula] = declaration;
+        if (!/^(?:\d+)?[dD]\d+(?:[+-](?:(?:\d+)?[dD]\d+|\d+))*$/.test(formula.trim())) {
+          aliasStatus.textContent = `変数「${variableName}」にはダイス式を指定してください（例: int ${variableName} = 1d8;）。`;
+          return;
+        }
+        messages.push({
+          rollFormula: formula.trim(),
+          variableName,
+          aliasContext,
+          historyText: line,
+          delayBefore: delayBeforeNext
+        });
+        delayBeforeNext = 0;
+        hasPendingDelay = false;
+        continue;
+      }
       const sceneCommand = line.match(/^\/s(.*)$/i);
       if (sceneCommand && sceneCommand[1].trim() && !/^\/scene(?:\s|$)/i.test(line)) {
-        messages.push({ sceneQuery: sceneCommand[1].trim(), delayBefore: delayBeforeNext });
+        messages.push({ sceneQuery: sceneCommand[1].trim(), aliasContext, delayBefore: delayBeforeNext });
       } else {
-        messages.push({ text: line, delayBefore: delayBeforeNext });
+        messages.push({ text: line, aliasContext, delayBefore: delayBeforeNext });
       }
       delayBeforeNext = 0;
       hasPendingDelay = false;
@@ -1240,7 +1243,7 @@
     hideCommandSuggestions();
     const selectedTab = selectedTabIndex;
     for (const message of messages) {
-      rememberInputHistory(message.text);
+      rememberInputHistory(message.historyText ?? message.text);
       pendingMessages.push({
         ...message,
         tabIndex: selectedTab !== null && selectedTab !== '' ? Number(selectedTab) : null
@@ -1281,7 +1284,6 @@
         saveAliasEntries();
         renderAliasEditor();
         renderAliasButtons();
-        applyAliasButtonsVisibility();
       });
       row.append(visibilityButton);
       // 順番の入替（上／下へ移動）。
@@ -1770,14 +1772,53 @@
     const requestId = ++chatStateRequestId;
     try {
       const chatState = await sendRequest('CCFOLIA_CHAT_GET_STATE', { force, includeCharacters });
-      if (requestId !== chatStateRequestId) return;
+      if (requestId !== chatStateRequestId) return latestChatState;
       expectedRoomPath = chatState.roomPath;
       renderChatState(chatState);
+      return chatState;
     } catch (reason) {
       if (requestId !== chatStateRequestId) return;
       if (!latestChatState) chatStatus.textContent = reason instanceof Error ? reason.message : String(reason);
+      throw reason;
     }
   };
+
+  const diceResultForFormula = (text, formula) => {
+    const escapedFormula = formula.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const result = String(text ?? '').match(new RegExp(
+      `(?:${escapedFormula}\\s*)?\\(\\s*${escapedFormula}\\s*\\)\\s*[＞>]\\s*\\[?(-?\\d+)\\]?`,
+      'i'
+    ));
+    return result ? Number(result[1]) : null;
+  };
+  const messageSignature = (message) => JSON.stringify([
+    message?.speaker ?? '',
+    message?.date ?? '',
+    message?.text ?? '',
+    message?.rowIndex ?? null
+  ]);
+  const waitForDiceResult = async (formula, previousSignatures) => {
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      await refreshChatState({ force: true });
+      const resultMessage = (latestChatState?.messages ?? []).find((message) =>
+        !previousSignatures.has(messageSignature(message))
+        && diceResultForFormula(message.text, formula) !== null
+      );
+      if (resultMessage) return diceResultForFormula(resultMessage.text, formula);
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    }
+    throw new Error(`ダイス「${formula}」の結果を30秒以内に確認できませんでした。`);
+  };
+  const expandAliasVariables = (text, aliasContext) => text.replace(/\[([A-Za-z_]\w*)\]|\b[A-Za-z_]\w*\b/g, (match, bracketedName) => {
+    const name = bracketedName ?? match;
+    if (aliasContext.failedVariables.has(name)) {
+      throw new Error(`変数「${name}」のダイス結果を取得できませんでした。`);
+    }
+    return Object.prototype.hasOwnProperty.call(aliasContext.variables, name)
+      ? String(aliasContext.variables[name])
+      : match;
+  });
 
   closeRoomChatButton.addEventListener('click', async (event) => {
     event.preventDefault();
@@ -2160,24 +2201,41 @@
           if (message.delayBefore > 0) {
             await new Promise((resolve) => window.setTimeout(resolve, message.delayBefore));
           }
-          if (message.sceneQuery !== undefined) {
+          if (message.rollFormula) {
+            const previousSignatures = new Set((latestChatState?.messages ?? []).map(messageSignature));
+            await sendRequest('CCFOLIA_CHAT_SEND', {
+              text: message.rollFormula,
+              ...(message.tabIndex !== null ? { tabIndex: message.tabIndex } : {})
+            });
+            const value = await waitForDiceResult(message.rollFormula, previousSignatures);
+            message.aliasContext.variables[message.variableName] = value;
+            message.aliasContext.failedVariables.delete(message.variableName);
+            chatStatus.textContent = `変数「${message.variableName}」に${value}を設定しました。`;
+          } else if (message.sceneQuery !== undefined) {
             if (!sceneEntries.length) await ensureSceneEntries();
-            const sceneName = sceneEntries.find((name) => matchesCommandQuery(name, message.sceneQuery));
-            if (!sceneName) throw new Error(`「${message.sceneQuery}」に一致するシーンがありません。`);
+            const query = message.aliasContext
+              ? expandAliasVariables(message.sceneQuery, message.aliasContext)
+              : message.sceneQuery;
+            const sceneName = sceneEntries.find((name) => matchesCommandQuery(name, query));
+            if (!sceneName) throw new Error(`「${query}」に一致するシーンがありません。`);
             await sendRequest('CCFOLIA_CHAT_SEND', { text: `/scene ${sceneName}` });
             currentSceneName = sceneName;
             saveCurrentScene();
             chatStatus.textContent = `シーンを「${sceneName}」に切り替えました。`;
           } else {
+            const text = message.aliasContext
+              ? expandAliasVariables(message.text, message.aliasContext)
+              : message.text;
             await sendRequest('CCFOLIA_CHAT_SEND', {
-              text: message.text,
+              text,
               ...(message.tabIndex !== null ? { tabIndex: message.tabIndex } : {})
             });
           }
           void refreshChatState();
         } catch (reason) {
+          if (message.variableName) message.aliasContext.failedVariables.add(message.variableName);
           chatStatus.textContent = reason.message;
-          if (message.text && !chatInput.value && pendingMessages.length === 0) {
+          if (message.text && !message.aliasContext && !chatInput.value && pendingMessages.length === 0) {
             chatInput.value = message.text;
             chatInput.dispatchEvent(new Event('input', { bubbles: true }));
           }
@@ -2394,7 +2452,6 @@
   renderDiceControls();
   renderAliasButtons();
   renderAliasEditor();
-  applyAliasButtonsVisibility();
   syncCommandMap();
   void refreshChatState({ force: true, includeCharacters: true });
   void syncAutoSkipStatus();

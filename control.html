@@ -71,7 +71,6 @@
         <section class="alias-settings" aria-label="エイリアス設定">
           <div class="alias-editor">
             <strong>エイリアス（alias）</strong>
-            <button id="alias-buttons-toggle" type="button" aria-pressed="false">ボタン列：非表示</button>
           </div>
           <div class="alias-editor">
             <label for="alias-name">alias名</label>
@@ -79,7 +78,7 @@
             <button id="alias-add" type="button">追加</button>
             <button id="alias-cancel" type="button" hidden>やめる</button>
           </div>
-          <textarea id="alias-text" rows="3" placeholder=";で発言を区切る（#delay 0.8;で次の発言まで0.8秒待機）"></textarea>
+          <textarea id="alias-text" rows="3" placeholder=";で発言を区切る（#delay 0.8;、int a = 1d8;）"></textarea>
           <ul id="alias-list" class="alias-list" aria-label="登録済みエイリアス"></ul>
           <output id="alias-status" role="status"></output>
         </section>
