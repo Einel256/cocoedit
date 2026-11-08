@@ -16,9 +16,6 @@
   const log = (...args) => console.info(LOG_PREFIX, ...args);
   const error = (...args) => console.error(LOG_PREFIX, ...args);
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  // 非表示タブでは setTimeout が約1秒に間引かれ、閉じ処理などが体感的に異常に遅くなります。
-  // そこで画面が非表示のときはタイマー制限を受けない MessageChannel ベースの待ちに切り替えます。
-  // 表示中は通常の setTimeout の待ち（表示の安定のための実時間）を使います。
   const fastWait = (ms) => (document.hidden
     ? new Promise((resolve) => {
       const channel = new MessageChannel();
@@ -391,6 +388,25 @@
     return values ? values.join('\n') : null;
   };
 
+  // 能力値ダイスショートカット。「str1」「con3」のような入力を、CCFOLIAの能力値参照
+  // （{STR}など）を使ったCCBダイスに変換して送ります（例: str1 → CCB<={STR}*1 【STR × 1】）。
+  // 対応するのはCoCの8能力値です。記法は1行1コマンドで、半角・全角・英字の大小を問いません。
+  // 元のコマンド文は送らず、変換後の「CCB<=…」だけを送ります。
+  const parseStatCommandLines = (text) => {
+    const lines = text.split(/\r?\n/).map((line) => normalizeFullWidthDigits(line).trim()).filter(Boolean);
+    if (!lines.length) return null;
+    const statNames = { str: 'STR', con: 'CON', pow: 'POW', dex: 'DEX', app: 'APP', siz: 'SIZ', int: 'INT', edu: 'EDU' };
+    const values = [];
+    for (const line of lines) {
+      const match = line.match(/^(str|con|pow|dex|app|siz|int|edu)\s*(?:[*x×]\s*)?([1-9]\d{0,2})$/i);
+      if (!match) return null;
+      const statName = statNames[match[1].toLowerCase()];
+      const value = Number(match[2]);
+      values.push(`CCB<={${statName}}*${value} 【${statName} × ${value}】`);
+    }
+    return values;
+  };
+
   const findChatTextarea = (target) => {
     if (!(target instanceof HTMLTextAreaElement)
       || target.name !== 'text'
@@ -454,7 +470,22 @@
     }
   };
 
-  // 「r<n> <m>」「rg<n> <m>」をCCFOLIA本体の入力欄から送ったときも「resb…」に置き換えて送ります。
+  // 能力値ダイス（「str1」「con3」など）をCCFOLIA本体の入力欄から送ったときも、
+  // 変換後のCCBダイス文に置き換えて送ります。
+  let handlingStatCommand = false;
+  const executeStatCommand = async (textarea, values) => {
+    if (handlingStatCommand) return;
+    handlingStatCommand = true;
+    try {
+      clearReactTextarea(textarea);
+      await sendChatText({ text: values.join('\n') });
+      log(`能力値ダイスを送信しました。`);
+    } catch (reason) {
+      error('能力値ダイスを送信できませんでした。', reason);
+    } finally {
+      handlingStatCommand = false;
+    }
+  };
   let handlingResCommand = false;
   const executeResCommand = async (textarea, values) => {
     if (handlingResCommand) return;
@@ -478,7 +509,15 @@
     }
     const commands = parseChatCommands(textarea.value);
     if (!commands) {
-      // 自動削除などのステータスコマンドでない場合は、「res」コマンドを確認します。
+      // 自動削除などのステータスコマンドでない場合、「str1」のような能力値ダイスを確認します。
+      const statValues = parseStatCommandLines(textarea.value);
+      if (statValues) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void executeStatCommand(textarea, statValues);
+        return;
+      }
+      // それもない場合は「res」コマンドを確認します。
       const resValues = parseResCommandLines(textarea.value);
       if (!resValues) return;
       event.preventDefault();
@@ -711,40 +750,53 @@
   };
 
   let cachedChatState = null;
+  let cachedRoomPath = location.pathname;
+  // 部屋を移った直後は、URLが先に切り替わってもCCFOLIA側のDOMには前の部屋のログが
+  // 少し残ります。その間に読むと前の部屋の行を新しい部屋のログとして保存してしまうため、
+  // ロッグが確実に新しくなってから読めるように凍結します。
+  let roomSwitchPending = false;
+  let roomSwitchSince = 0;
+  let frozenLogList = null;
   // ルームチャットのログ行を読み取ります。getChatState（3秒ポーリング）と
   // ログ変化時の即時プッシュの両方から使います。
   const readRoomLogMessages = () => {
     const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
-    return logList
-      ? [...logList.querySelectorAll('[data-index]')]
-        .filter((element) => element.isConnected)
-        .map((element) => {
-          const item = element.querySelector('.MuiListItem-root') || element;
-          const header = item.querySelector('.MuiListItemText-primary');
-          const date = header?.querySelector('.MuiTypography-caption');
-          const speaker = header
-            ? [...header.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent).join('').trim()
-            : '';
-          const secondary = item.querySelector('.MuiListItemText-secondary');
-          let text = secondary?.innerText?.trim() || '';
-          if (!text) {
-            // Dice result rows can use a different MUI layout without the usual
-            // secondary text node. Exclude the author/date header so it does not
-            // get copied into the message body as if it were dice output.
-            const body = item.cloneNode(true);
-            body.querySelectorAll('.MuiListItemText-primary, [class*="MuiListItemAvatar"]').forEach((element) => element.remove());
-            text = normalizedText(body);
-          }
-          const avatarImage = item.querySelector('[class*="MuiListItemAvatar"] img.MuiAvatar-img, [class*="MuiListItemAvatar"] img, img[alt="avatar"]');
-          const avatar = resolveRoomAssetUrl(avatarImage?.getAttribute('src')
-            || avatarImage?.getAttribute('data-src')
-            || avatarImage?.currentSrc
-            || avatarImage?.src
-            || '');
-          return { speaker, date: date?.textContent?.replace(/^\s*-\s*/, '').trim() || '', text, avatar };
+    if (!logList) return [];
+    const rowElements = [...logList.querySelectorAll('[data-index]')].filter((element) => element.isConnected);
+    return rowElements.map((element) => {
+      const item = element.querySelector('.MuiListItem-root') || element;
+    const header = item.querySelector('.MuiListItemText-primary');
+    const date = header?.querySelector('.MuiTypography-caption');
+    const speaker = header
+      ? [...header.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent).join('').trim()
+      : '';
+    const secondary = item.querySelector('.MuiListItemText-secondary');
+    let text = secondary?.innerText?.trim() || '';
+    if (!text) {
+      // Dice result rows can use a different MUI layout without the usual
+      // secondary text node. Exclude the author/date header so it does not
+      // get copied into the message body as if it were dice output.
+      const body = item.cloneNode(true);
+      body.querySelectorAll('.MuiListItemText-primary, [class*="MuiListItemAvatar"]').forEach((element) => element.remove());
+      text = normalizedText(body);
+    }
+    const avatarImage = item.querySelector('[class*="MuiListItemAvatar"] img.MuiAvatar-img, [class*="MuiListItemAvatar"] img, img[alt="avatar"]');
+    const avatar = resolveRoomAssetUrl(avatarImage?.getAttribute('src')
+      || avatarImage?.getAttribute('data-src')
+      || avatarImage?.currentSrc
+      || avatarImage?.src
+      || '');
+    // CCFOLIAが行に付ける通し番号（data-index）。同じ文面の別メッセージを区別するために使います。
+    const rowIndex = Number(element.getAttribute('data-index'));
+    return {
+      speaker,
+      date: date?.textContent?.replace(/^\s*-\s*/, '').trim() || '',
+      text,
+      avatar,
+      rowIndex: Number.isFinite(rowIndex) ? rowIndex : null
+    };
         })
-        .filter((message) => message.text || message.speaker)
-      : [];
+        .filter((message) => message.text || message.speaker);
   };
   // タブごとの未読ドット（お知らせ）を記録し、「自分が見ていないタブ」への新着メッセージを検知します。
   // CCFOLIAのタブは新着があるとタブ名の脇に MuiBadge-dot の小さな点が表示されます。
@@ -752,6 +804,40 @@
   let lastUnreadByTab = new Map(); // タブindex -> 前回の数字バッジ値（ドットが使えない環境向けの補助）
   let pendingUnread = new Set(); // 未通知のままのタブindex（そのタブを開くまで保持）
   let unreadSeen = false; // 最初の1回はドットの基準を記録するだけにします（誤通知防止）
+  const resetChatRoomCacheIfNeeded = () => {
+    if (cachedRoomPath === location.pathname) return false;
+    cachedRoomPath = location.pathname;
+    cachedChatState = null;
+    lastPushedLogSignature = '';
+    lastPushedRoomPath = location.pathname;
+    lastDotByTab.clear();
+    lastUnreadByTab.clear();
+    pendingUnread.clear();
+    unreadSeen = false;
+    clearUnreadNotifications();
+    // 移籍直後に前の部屋のログを読まないよう凍結します。解錠条件は roomLogFrozenForNewRoom 参照。
+    roomSwitchPending = true;
+    roomSwitchSince = Date.now();
+    frozenLogList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
+    return true;
+  };
+  // 部屋を移った直後にログの読み取りを凍結すべきか。次のいずれかが成り立ったら解錠します。
+  // ・ログ窓が消えた／行が0になった（CCFOLIAが新しい部屋の準備に入った）
+  // ・ログ窓の要素が丸ごと差し替わった（新しい部屋のログ窓になった）
+  // ・6秒たった（上記のどちらも観測できない場合の保険）
+  const roomLogFrozenForNewRoom = () => {
+    if (!roomSwitchPending) return false;
+    const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
+    if (!logList || logList !== frozenLogList || !logList.querySelector('[data-index]')) {
+      roomSwitchPending = false;
+      return false;
+    }
+    if (Date.now() - roomSwitchSince > 6000) {
+      roomSwitchPending = false;
+      return false;
+    }
+    return true;
+  };
 
   const unreadTabsSnapshot = () => [...pendingUnread].map((index) => ({
     index,
@@ -811,6 +897,7 @@
   };
 
   const getChatState = async ({ force = true, includeCharacters = false } = {}) => {
+    resetChatRoomCacheIfNeeded();
     if (!force && !chatDrawerCloseButton() && cachedChatState) return attachUnreadTabs(cachedChatState);
     const state = await withChatDrawer(async () => {
     const tabs = [...document.querySelectorAll('[role="tablist"] button')]
@@ -846,7 +933,8 @@
         };
       })
       .filter((tab) => tab.name);
-    const messages = readRoomLogMessages();
+    // 部屋の移籍直後は前の部屋のログがDOMに残るため、新しい部屋の準備ができるまで読みません。
+    const messages = roomLogFrozenForNewRoom() ? [] : readRoomLogMessages();
     const speaker = document.querySelector('input[name="name"][placeholder="noname"]');
     const speakerImage = document.querySelector('button[aria-label="キャラクター選択"] img.MuiAvatar-img');
     const diceButtons = [...document.querySelectorAll('button[aria-label^="D"]')]
@@ -862,6 +950,7 @@
       : cachedChatState?.characters ?? [];
     return {
       ok: true,
+      roomPath: location.pathname,
       tabs,
       messages,
       speakerName: speaker?.value ?? '',
@@ -880,15 +969,23 @@
   // ログDOMの変化を検知して、そのたびに最新のメッセージ一覧を制御ウィンドウへ送ります。
   // 仲介の待ち時間を短くして、新着メッセージをほぼ即座に反映させます。
   let lastPushedLogSignature = '';
+  let lastPushedRoomPath = location.pathname;
   let pushLogTimer = null;
   const pushRoomLogUpdate = () => {
     pushLogTimer = null;
+    resetChatRoomCacheIfNeeded();
+    if (lastPushedRoomPath !== location.pathname) {
+      lastPushedRoomPath = location.pathname;
+      lastPushedLogSignature = '';
+    }
+    // 部屋の移籍直後は前の部屋のログがDOMに残りうるため、解錠されるまで送出しません。
+    if (roomLogFrozenForNewRoom()) return;
     const messages = readRoomLogMessages();
-    const signature = `${messages.length}:${JSON.stringify(messages.at(-1) ?? '')}`;
+    const signature = JSON.stringify(messages);
     if (signature === lastPushedLogSignature) return;
     lastPushedLogSignature = signature;
     try {
-      chrome.runtime.sendMessage({ type: 'CCFOLIA_CHAT_LOG_PUSH', messages }).catch?.(() => {});
+      chrome.runtime.sendMessage({ type: 'CCFOLIA_CHAT_LOG_PUSH', roomPath: location.pathname, messages }).catch?.(() => {});
     } catch {
       // 制御ウィンドウが開いていなければ送出先がなくても問題ありません（ポーリングで反映します）。
     }
@@ -898,20 +995,10 @@
       clearTimeout(pushLogTimer);
       pushLogTimer = setTimeout(pushRoomLogUpdate, 100);
     });
-    const attach = () => {
-      const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
-      if (logList) {
-        try { observer.disconnect(); } catch { /* 無視 */ }
-        observer.observe(logList, { childList: true, subtree: true, characterData: true });
-      }
-    };
-    attach();
-    // ログ要素がチャットウィンドウの開閉で差し替えられるため、一定間隔で付け直します。
-    setInterval(() => {
-      const logList = document.querySelector('ul[aria-label="ルームチャット"][role="log"]');
-      if (logList) attach();
-    }, 2000);
-    // 付け直しの瞬間の取りこぼしを防ぐため、初回は一度即pushします。
+    // チャットウィンドウの開閉でログ要素ごと差し替えられるため、ページ全体の変化から拾います。
+    // 変化が多いページでも、読み取りは100msにまとめ、内容が変わらないときは送出を抑えます。
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    // 初回は一度即pushします。
     pushRoomLogUpdate();
   };
   watchRoomLog();
@@ -940,14 +1027,15 @@
     if (!sendButton || !sendButton.isConnected) throw new Error('CCFOLIAの送信ボタンが見つかりません。');
     const messageText = String(text ?? '');
     // 「r<n> <m>」/「rg<n> <m>」は「resb…」の形に置き換えて送ります（例: r5 3 → resb2）。
-    const sendText = makeResCommandText(messageText) ?? messageText;
+    const statConverted = parseStatCommandLines(messageText);
+    const sendText = makeResCommandText(messageText) ?? statConverted?.join('\n') ?? messageText;
     setReactInputValue(textarea, sendText);
     sendButton.click();
     // Wait for CCFOLIA's React submit handler to clear the draft before the
     // control window reads the updated room log. Kept very short so repeated
     // dice/SAN sends do not create a noticeable "cannot send" window.
     await waitFor(() => textarea.isConnected && textarea.value === '', 300);
-    if (!parseChatCommands(sendText)) {
+    if (!parseChatCommands(sendText) && !statConverted) {
       const expectedText = sendText.replace(/\s+/g, ' ').trim();
       await waitFor(() => {
         const entries = [...document.querySelectorAll('ul[aria-label="ルームチャット"][role="log"] [data-index]')];
@@ -957,6 +1045,9 @@
     } else {
       await wait(60);
     }
+    // 送信したメッセージを制御ウィンドウへ即反映します（オブザーバーの待ち時間を待りません）。
+    clearTimeout(pushLogTimer);
+    pushRoomLogUpdate();
     return { ok: true };
   });
 
@@ -1843,9 +1934,7 @@
       host.style.bottom = 'auto';
       host.style.width = `${bounds.width}px`;
       host.style.height = `${bounds.height}px`;
-      // 重ね順: 平常時はダイアログ類（チャットパレットなど）より上に重ねます。
-      // メニュー類（アカウントメニューなどのポップオーバー）が開いている間だけは、
-      // そのメニューより一段下に下げて、メニューが見えるようにします。
+
       const popoverPaper = [...document.querySelectorAll('.MuiPopover-paper, .MuiMenu-paper')]
         .filter(visible).at(-1);
       if (popoverPaper) {
@@ -1896,7 +1985,6 @@
   };
 
   const synchronizeChatOverlayMode = () => {
-    // オーバーレイを一時的に隠している間はモードを切り替えません（iframeを閉じると制御ウィンドウ側の処理が途切れます）。
     if (chatOverlaySuspendedUntil !== null) return;
     if (chatOverlaySyncPromise) return;
     chatOverlaySyncPromise = (async () => {
@@ -1912,9 +2000,6 @@
       });
   };
 
-  // 「再取得」など、CCFOLIA本体側のUIを直接操作する処理の間は、拡張チャットのオーバーレイを一時的に隠します。
-  // モードをOFFにするとiframeごと消えて制御ウィンドウ側の処理が途切れるため、
-  // 非表示にするだけにして、処理が終わったら元に戻します。
   const CHAT_OVERLAY_SUSPEND_EXPIRY_MS = 30 * 60 * 1000;
   const setChatOverlaySuspended = (paused) => {
     if (paused) {

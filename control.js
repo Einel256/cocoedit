@@ -141,23 +141,39 @@
 
   let acquiredCharacters = readStoredCharacters();
   let latestChatState = null;
-  // チャット全文の保存。一度でも「見えた or 届いた」メッセージをタブごとに蓄積します。
+  let expectedRoomPath = null;
+  let chatStateRequestId = 0;
+  // チャット全文の保存。一度でも「見えた or 届いた」メッセージをルーム・タブごとに蓄積します。
   // CCFOLIAのログ画面は表示分しかDOMに持たないため、過去に見た分もこの保存から遡って閲覧できます。
   const FULL_LOG_STORAGE_KEY = 'ccfolia-full-log-v1';
   const FULL_LOG_LIMIT_PER_TAB = 2000; // 1タブぶんに保管する上限。これを超えると古いものから抜きます。
   let fullLogSaveTimer = null;
   const readStoredFullLog = () => {
+    let stored;
     try {
-      const stored = JSON.parse(localStorage.getItem(FULL_LOG_STORAGE_KEY) || 'null');
+      stored = JSON.parse(localStorage.getItem(FULL_LOG_STORAGE_KEY) || 'null');
       if (!stored || typeof stored !== 'object') return new Map();
-      return new Map(Object.entries(stored)
-        .filter(([, list]) => Array.isArray(list))
-        .map(([key, list]) => [key, list.filter((message) => message && typeof message === 'object')]));
     } catch {
       return new Map();
     }
+    const entries = Object.entries(stored)
+      .filter(([key, list]) => key.startsWith('room:') && Array.isArray(list))
+      .map(([key, list]) => [key, list.filter((message) => message && typeof message === 'object')]);
+    if (entries.length !== Object.keys(stored).length) {
+      try {
+        localStorage.setItem(FULL_LOG_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
+      } catch (reason) {
+        console.error('[CCFOLIA 拡張チャット] 古いルーム別ログを削除できませんでした。', reason);
+      }
+    }
+    return new Map(entries);
   };
   const fullLogByTab = readStoredFullLog();
+  let activeFullLogRoomPath = null;
+  let updatingEverything = false;
+  const fullLogKey = (roomPath, tabIndex) => roomPath?.startsWith('/rooms/')
+    ? `room:${encodeURIComponent(roomPath)}:tab:${tabIndex}`
+    : null;
   // 連続保存を防ぐため、書き込みは多少遅延させます。失敗してもメモリ上は動き続けます。
   const saveFullLog = () => {
     clearTimeout(fullLogSaveTimer);
@@ -173,45 +189,232 @@
       }
     }, 1500);
   };
-  // 同じメッセージの判定キー。ログには同一内容の行が並ぶことがあるため、
-  // 発言者・日付・本文の組み合わせで重複を見ます（見た目上の重複は1つに圧縮されます）。
-  const messageKey = (message) => `${message?.speaker ?? ''}\u0000${message?.date ?? ''}\u0000${message?.text ?? ''}`;
-  // 蓄積済みのログに、今回読めた行を順序を保ったまま取り込みます。
-  // 読めるのは直近の行だけなので、まず「既存と一致する行」を境界として、
-  // 境界より新しい未知の行は末尾に足し、境界より古い未知の行はさかのぼる位置に挿入します。
-  const mergeLogMessages = (stored, incoming) => {
-    const result = [...stored];
-    if (!result.length) {
-      const seen = new Set();
-      for (const message of incoming ?? []) {
-        if (!message) continue;
-        const key = messageKey(message);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        result.push(message);
-      }
-      return result;
+  const resetFullLog = () => {
+    clearTimeout(fullLogSaveTimer);
+    fullLogSaveTimer = null;
+    fullLogByTab.clear();
+    try {
+      localStorage.removeItem(FULL_LOG_STORAGE_KEY);
+    } catch (reason) {
+      console.error('[CCFOLIA 拡張チャット] 保存済みの会話ログをリセットできませんでした。', reason);
+      throw reason;
     }
-    const positionByKey = new Map(result.map((message, index) => [messageKey(message), index]));
-    let insertAfterKey = null; // nullのあいだは「末尾より後」を意味します（＝日付がこれより新しい行へ）
-    for (let i = (incoming ?? []).length - 1; i >= 0; i -= 1) {
-      const message = incoming[i];
+  };
+  const keepFullLogForRoom = (roomPath) => {
+    if (!roomPath?.startsWith('/rooms/') || roomPath === activeFullLogRoomPath) return;
+    activeFullLogRoomPath = roomPath;
+    const prefix = `room:${encodeURIComponent(roomPath)}:tab:`;
+    let removed = false;
+    for (const key of fullLogByTab.keys()) {
+      if (key.startsWith('room:') && !key.startsWith(prefix)) {
+        fullLogByTab.delete(key);
+        removed = true;
+      }
+    }
+    if (removed) saveFullLog();
+  };
+  // CCFOLIAが行に付ける通し番号（data-index）は、実機では同じ文面の別メッセージを
+  // 確実に区別できるとは限らないため、重複判定そのものには使いません。
+  // 同一読み取り内で同じ行が二重に写ったときの整理だけに使います。
+  const rowIndexOf = (message) => (Number.isFinite(message?.rowIndex) ? message.rowIndex : null);
+  const sortLogMessages = (messages) => {
+    if (messages.length < 2 || !messages.every((message) => rowIndexOf(message) !== null)) return messages;
+    return messages
+      .map((message, index) => ({ message, index }))
+      .sort((left, right) => (rowIndexOf(left.message) - rowIndexOf(right.message)) || (left.index - right.index))
+      .map(({ message }) => message);
+  };
+  // 余計な空白・ゼロ幅文字を取り除いて比較用にそろえます。
+  const normalizeLogText = (value) => String(value ?? '')
+    .replace(/[\u200B\u200C\u200D\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // 比較用の内容トークン。メッセージオブジェクトは保存ログに残り続けるため、結果はWeakMapで覚えます。
+  const logTokenCache = new WeakMap();
+  const logToken = (message) => {
+    if (!message || typeof message !== 'object') return { speaker: '', date: '', text: '' };
+    let token = logTokenCache.get(message);
+    if (!token) {
+      token = {
+        speaker: normalizeLogText(message.speaker),
+        date: normalizeLogText(message.date),
+        text: normalizeLogText(message.text)
+      };
+      logTokenCache.set(message, token);
+    }
+    return token;
+  };
+  // 発言者・本文の内容が同じ行か、同じ1件の別版（片方が描画途中／ダイス結果の追記）かを見ます。
+  // 日付と通し番号は対応づけ（順序整列）の時点で別途使うため、ここでは見ません。
+  const sameLogToken = (a, b) => {
+    if (!a || !b) return false;
+    if (a.speaker && b.speaker && a.speaker !== b.speaker) return false;
+    if (a.text === b.text || !a.text || !b.text) return true;
+    // ダイスの結果が後から追記された版（例: 「CCB<=60」→「CCB<=60 ＞ (1D100<=60) ＞ 67」）だけを
+    // 別版に含めます。ふつうの文章を後から伸ばした行は別メッセージのままにします。
+    const shorter = a.text.length <= b.text.length ? a.text : b.text;
+    const longer = a.text.length <= b.text.length ? b.text : a.text;
+    if (!longer.startsWith(shorter)) return false;
+    return /(?:\(|（)\d*[dD]\d+(?:\)|）)(?:[+＋]\d*[dD]\d+(?:\)|）))*$|\d*[dD]\d+[<＜]=?\S*$|CCB[<＜]=?\S*$/.test(shorter);
+  };
+  // 発言者と日付が揃っていない（描画途中の）行かどうか。
+  const isRenderTrailer = (token) => !token.speaker || !token.date;
+  // 同じ1行の二重描写かどうか。描画途中の行どうしや、同じ通し番号どうしは「同じ行」です。
+  // 完成した同文どうしは、同じ行の二重描写でも別メッセージでもあり得るため、
+  // 二重描写とはみなしません（区別は対応づけ＝順序整列の側で行います）。
+  const sameRenderVariant = (a, b) => {
+    const tokenA = logToken(a);
+    const tokenB = logToken(b);
+    if (!sameLogToken(tokenA, tokenB)) return false;
+    if (isRenderTrailer(tokenA) || isRenderTrailer(tokenB)) return true;
+    const indexA = rowIndexOf(a);
+    const indexB = rowIndexOf(b);
+    return indexA !== null && indexB !== null && indexA === indexB;
+  };
+  // ふたつの版を1行にまとめます。内容の多い本文を残しつつ、新しい版の日付・アイコンを優先します。
+  const mergeLogVariant = (older, newer) => {
+    const olderText = normalizeLogText(older?.text);
+    const newerText = normalizeLogText(newer?.text);
+    return {
+      ...older,
+      ...newer,
+      speaker: normalizeLogText(newer?.speaker) || normalizeLogText(older?.speaker) || '',
+      date: normalizeLogText(newer?.date) || normalizeLogText(older?.date) || '',
+      text: newerText.length >= olderText.length ? newer?.text ?? '' : older?.text ?? '',
+      avatar: newer?.avatar || older?.avatar || ''
+    };
+  };
+  // 蓄積済みのログに、今回読めた行を取り込みます。
+  // 読めるのは直近の行だけなので、今回の行を「その順のまま」蓄積済みの末尾側と対応づけ、
+  // 対応づけられなかった行を対応づけた行の直後に足します。
+  // 重複判定を「同じ内容の行が既にあるか」（集合）ではなく、この「順序での対応づけ」で行う
+  // のがポイントです。同じ文面の別メッセージ（連投・再送）は行数ぶん別の行として扱われます。
+  const mergeLogMessages = (stored0, incoming0) => {
+    // まず今回の読み取り内で、同じ1行の二重描写（描画途中の行・同じ通し番号）をまとめます。
+    // 完成した同文どうしは別メッセージの可能性があるため、まとめません。
+    const incoming = [];
+    for (const message of incoming0 ?? []) {
       if (!message) continue;
-      const key = messageKey(message);
-      if (positionByKey.has(key)) {
-        insertAfterKey = key;
+      let overlap = -1;
+      for (let i = incoming.length - 1; i >= 0; i -= 1) {
+        if (sameRenderVariant(incoming[i], message)) {
+          overlap = i;
+          break;
+        }
+      }
+      if (overlap === -1) incoming.push(message);
+      else incoming[overlap] = mergeLogVariant(incoming[overlap], message);
+    }
+    const stored = stored0 ? [...stored0] : [];
+    if (!incoming.length) return { messages: stored, changed: false };
+    if (!stored.length) return { messages: incoming, changed: true };
+    const incomingTokens = incoming.map(logToken);
+    const storedTokens = new Array(stored.length).fill(null);
+    const storedTokenAt = (index) => (storedTokens[index] ??= logToken(stored[index]));
+    // 対応づけの候補は蓄積の末尾側だけ見れば十分です（今回読めるのは直近の行だけのため）。
+    const windowStart = Math.max(0, stored.length - Math.max(incoming.length * 3, incoming.length + 150));
+    const matched = new Array(incoming.length).fill(-1);
+    let changed = false;
+    let cursor = windowStart;
+    for (let i = 0; i < incoming.length; i += 1) {
+      const token = incomingTokens[i];
+      // 直近で対応づけた行の後ろから探します。対応づけられず飛び越えた蓄積行は
+      // 今回の画面に写らなかっただけなので、そのまま保持します。
+      for (let j = cursor; j < stored.length; j += 1) {
+        if (!sameLogToken(storedTokenAt(j), token)) continue;
+        // 通し番号を両方持っていて、それが違うなら同じ文面の別行です。次の候補を探します。
+        const indexStored = rowIndexOf(stored[j]);
+        const indexIncoming = rowIndexOf(incoming[i]);
+        if (indexStored !== null && indexIncoming !== null && indexStored !== indexIncoming) continue;
+        matched[i] = j;
+        // 対応づけた行は新しい版で内容を確定させます（描画途中に読めた残りを掃除します）。
+        const previous = stored[j];
+        const updated = mergeLogVariant(previous, incoming[i]);
+        if (logToken(updated).speaker !== logToken(previous).speaker
+          || logToken(updated).text !== logToken(previous).text
+          || logToken(updated).date !== logToken(previous).date
+          || (updated.avatar || '') !== (previous.avatar || '')) {
+          stored[j] = updated;
+          storedTokens[j] = null;
+          changed = true;
+        }
+        cursor = j + 1;
+        break;
+      }
+    }
+    // 対応づけられなかった行が「蓄積の末尾より新しい別メッセージ」かどうかを調べます。
+    // 同じ文面の別行として画面から古い行が消えたあとに再送されたとき、通し番号や日付の
+    // 新旧で「再送」と「ただの再読み込み」を区別します。
+    const isNewerThanStored = (message) => {
+      const token = logToken(message);
+      const index = rowIndexOf(message);
+      for (let v = stored.length - 1; v >= windowStart; v -= 1) {
+        if (!sameLogToken(storedTokenAt(v), token)) continue;
+        const storedIndex = rowIndexOf(stored[v]);
+        // 同じ文面の行が蓄積にあり、通し番号の大小で新しさを判定できます。
+        if (index !== null && storedIndex !== null) return index > storedIndex;
+        // 通し番号が使えないときは、日付が同じ（＝同じメッセージ）かだけで見ます。
+        const storedDate = storedTokenAt(v).date;
+        const incomingDate = token.date;
+        if (incomingDate && storedDate) return incomingDate > storedDate;
+        return false;
+      }
+      return false;
+    };
+    // 対応づけられなかった行を、まわりの対応づけた行の位置に合わせて足します。
+    // ・あとで対応づけられる行が続くとき: 直前に対応づけた行の直後（なければその行の直前）
+    // ・末尾まで続くとき: 直前に対応づけた行の直後（蓄積の末尾に新しいメッセージとして足す）
+    // ・最初から末尾まで対応づけられないとき: 新着が混ざっていれば蓄積の末尾、
+    //   混ざっていなければ対応づけ領域の先頭（さかのぼって読めた古い行の可能性）へ足します。
+    const insertRuns = [];
+    let lastMatched = -1;
+    for (let i = 0; i < incoming.length;) {
+      if (matched[i] !== -1) {
+        lastMatched = matched[i];
+        i += 1;
         continue;
       }
-      // 未知の行。直前に処理した行の前へ入れます。
-      const base = insertAfterKey === null ? result.length : positionByKey.get(insertAfterKey);
-      result.splice(base, 0, message);
-      for (const [existingKey, index] of positionByKey) {
-        if (index >= base) positionByKey.set(existingKey, index + 1);
-      }
-      positionByKey.set(key, base);
-      insertAfterKey = key;
+      let end = i;
+      while (end < incoming.length && matched[end] === -1) end += 1;
+      const nextMatched = end < incoming.length ? matched[end] : -1;
+      const atStored = nextMatched !== -1
+        ? (lastMatched !== -1 ? lastMatched + 1 : nextMatched)
+        : (lastMatched !== -1
+          ? lastMatched + 1
+          : incoming.slice(i, end).some((message) => isNewerThanStored(message)) ? stored.length : windowStart);
+      insertRuns.push({ atStored, rows: incoming.slice(i, end) });
+      i = end;
     }
-    return result;
+    const result = [];
+    let runIndex = 0;
+    for (let v = 0; v <= stored.length; v += 1) {
+      while (runIndex < insertRuns.length && insertRuns[runIndex].atStored === v) {
+        result.push(...insertRuns[runIndex].rows);
+        runIndex += 1;
+      }
+      if (v < stored.length) result.push(stored[v]);
+    }
+    // 以前の読み取りで「同じ1行の別版」が二重に保存されていたら整理します。
+    // 完成した同文どうしは別メッセージの可能性があるため、まとめません。
+    const collapsed = [];
+    for (const message of result) {
+      let overlap = -1;
+      for (let i = collapsed.length - 1; i >= 0; i -= 1) {
+        if (sameRenderVariant(collapsed[i], message)) {
+          overlap = i;
+          break;
+        }
+      }
+      if (overlap === -1) {
+        collapsed.push(message);
+        continue;
+      }
+      collapsed[overlap] = mergeLogVariant(collapsed[overlap], message);
+      changed = true;
+    }
+    const ordered = sortLogMessages(collapsed);
+    const reordered = ordered.some((message, index) => message !== collapsed[index]);
+    return { messages: ordered, changed: changed || collapsed.length !== result.length || reordered };
   };
   // タブを切り替えている最中は、CCFOLIA側の旧タブの行が一瞬届くことがあるため
   // 全文への取り込みを短いあいだ止めます（間違ったタブの行が混ざるのを防ぎます）。
@@ -611,11 +814,17 @@
 
   // ログ検索。発言者名・本文を部分一致で絞り込みます（スペース区切りの複数語のAND一致）。
   let logSearchQuery = '';
+  // ルーム確認時にaliasをその部屋のぶんへ入れ替える関数（aliasセクションで代入されます）。
+  let applyAliasRoom = null;
   const messageMatchesLogSearch = (message, query) => query.split(/\s+/).filter(Boolean)
     .every((word) => `${message.speaker ?? ''}\n${message.text ?? ''}`.toLocaleLowerCase().includes(word.toLocaleLowerCase()));
 
   const renderChatState = (chatState) => {
+    if (expectedRoomPath && chatState.roomPath !== expectedRoomPath) return;
+    expectedRoomPath = chatState.roomPath ?? expectedRoomPath;
     latestChatState = chatState;
+    keepFullLogForRoom(chatState.roomPath);
+    applyAliasRoom?.(chatState.roomPath);
     const avatarBySpeaker = new Map();
     for (const message of chatState.messages ?? []) {
       if (message.speaker && message.avatar && !avatarBySpeaker.has(message.speaker)) {
@@ -666,13 +875,13 @@
     // 以降は、既存の続きとして届いた新しい行と、さかのぼって読めた古い行を順序を保って足します。
     const selectedTabEntry = (chatState.tabs ?? []).find((tab) => tab.selected) ?? null;
     const selectedTabKey = selectedTabEntry !== null && !tabMergeGuarded
-      ? String(selectedTabEntry.index)
+      ? fullLogKey(chatState.roomPath, selectedTabEntry.index)
       : null;
     let logMessages = chatState.messages ?? [];
     if (selectedTabKey !== null) {
       const previousFull = fullLogByTab.get(selectedTabKey) ?? [];
-      const merged = mergeLogMessages(previousFull, logMessages);
-      if (merged.length !== previousFull.length) {
+      const { messages: merged, changed } = mergeLogMessages(previousFull, logMessages);
+      if (changed || merged.length !== previousFull.length) {
         fullLogByTab.set(
           selectedTabKey,
           merged.length > FULL_LOG_LIMIT_PER_TAB ? merged.slice(-FULL_LOG_LIMIT_PER_TAB) : merged
@@ -887,21 +1096,55 @@
 
   // --- エイリアス ---
   // 設定画面で登録した内容をメッセージ入力欄へ入れるボタン列です。
-  let aliasEntries = (() => {
+  // ルーム（セッション）ごとに分けて保存します。別の部屋に入った場合は空欄から始まり、
+  // 前のセッションのaliasはそちらの部屋へ戻ったときだけ出ます。
+  // 旧保存形式（全ルーム共通の配列）は、最初に見えたルームへいったん引き継ぎます。
+  const isValidAliasEntry = (entry) => Boolean(entry && typeof entry.name === 'string' && typeof entry.text === 'string');
+  const readAliasStore = () => {
+    const fallback = { legacy: [], rooms: {} };
     try {
       const stored = JSON.parse(localStorage.getItem(ALIAS_STORAGE_KEY) || 'null');
-      return Array.isArray(stored)
-        ? stored.filter((entry) => entry && typeof entry.name === 'string' && typeof entry.text === 'string')
-        : [];
+      if (Array.isArray(stored)) return { ...fallback, legacy: stored.filter(isValidAliasEntry) };
+      if (stored && typeof stored === 'object') {
+        const rooms = {};
+        for (const [roomPath, entries] of Object.entries(stored.rooms ?? {})) {
+          if (Array.isArray(entries)) rooms[roomPath] = entries.filter(isValidAliasEntry);
+        }
+        return { ...fallback, rooms };
+      }
     } catch {
-      return [];
+      // 壊れているときは空から始めます。
     }
-  })();
+    return fallback;
+  };
+  const aliasStore = readAliasStore();
+  // 受取前は旧保存（全ルーム共通）の内容を仮に使います。ルームを受取った時点で入れ替えます。
+  let aliasEntries = aliasStore.legacy.slice();
+  let aliasRoomPath = null;
   // 各aliasのボタン列への表示は個別に切り替えられます。古い保存データ（buttonVisibleなし）は表示扱いです。
   const isAliasButtonVisible = (entry) => entry?.buttonVisible !== false;
   let aliasEditingIndex = -1;
   const saveAliasEntries = () => {
-    localStorage.setItem(ALIAS_STORAGE_KEY, JSON.stringify(aliasEntries));
+    const payload = { rooms: { ...aliasStore.rooms } };
+    if (aliasRoomPath) payload.rooms[aliasRoomPath] = aliasEntries;
+    else if (aliasEntries.length) payload.legacy = aliasEntries;
+    localStorage.setItem(ALIAS_STORAGE_KEY, JSON.stringify(payload));
+  };
+  // ルームの受取。新しい部屋は空欄で始まり、旧形式のaliasを最初に見えたルームへ引き継ぎます。
+  applyAliasRoom = (roomPath) => {
+    if (!roomPath?.startsWith('/rooms/') || roomPath === aliasRoomPath) return;
+    aliasRoomPath = roomPath;
+    let entries = aliasStore.rooms[roomPath];
+    if (!Array.isArray(entries)) {
+      entries = aliasStore.legacy.slice();
+      aliasStore.legacy = [];
+    }
+    aliasStore.rooms[roomPath] = entries;
+    aliasEntries = entries;
+    aliasEditingIndex = -1;
+    saveAliasEntries();
+    renderAliasButtons();
+    renderAliasEditor();
   };
   const renderAliasButtons = () => {
     aliasButtons.replaceChildren();
@@ -937,10 +1180,28 @@
   const runAliasEntry = (index) => {
     const entry = aliasEntries[index];
     if (!entry) return;
-    chatInput.value = entry.text;
+    // 更新中などで送信できないときは、内容だけいったん入力欄に残します（押し直せば送られます）。
+    if (sendButton.disabled) {
+      chatInput.value = entry.text;
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    // 押したらすぐ送信します。改行で分かれたaliasは、行ごとに別の発言として送ります（空行は送りません）。
+    // 入力履歴・送信キュー・ステータスコマンド判定は送信ボタンと同じ経路です。
+    const lines = entry.text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line);
+    if (!lines.length) return;
     hideCommandSuggestions();
+    const selectedTab = selectedTabIndex;
+    for (const line of lines) {
+      rememberInputHistory(line);
+      pendingMessages.push({
+        text: line,
+        tabIndex: selectedTab !== null && selectedTab !== '' ? Number(selectedTab) : null
+      });
+    }
+    chatInput.value = '';
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-    chatInput.focus();
+    void sendPendingMessages();
   };
   const renderAliasEditor = () => {
     if (aliasEditingIndex >= 0 && !aliasEntries[aliasEditingIndex]) aliasEditingIndex = -1;
@@ -1075,27 +1336,31 @@
 
   // ステータスコマンド形式（1s-10, 2h20 など）か簡易判定し、候補表示を抑制する。
   const isStatusCommandText = (text) => /^(?:\d+(?:(?:\s*,\s*|\s+)\d+)*)?\s*(hp|mp|san|h|m|s)(\s*)(=|[+-])?(\s*)(\d+)$/i.test(text.trim());
+  const isDiceShortcutText = (text) => /^(?:1|1d|1d1|1d10|1d100)$/i.test(text.trim())
+    || text.trim() === '1d100<={SAN} 【正気度ロール】';
 
   let suggestionHighlightIndex = -1;
+  let skillSuggestionQuery = null;
 
   const hideSkillSuggestions = () => {
     if (!skillSuggestions) return;
     skillSuggestions.hidden = true;
     skillSuggestions.replaceChildren();
     suggestionHighlightIndex = -1;
+    skillSuggestionQuery = null;
   };
 
   const showSkillSuggestions = (query) => {
     if (!skillSuggestions) return;
     const q = query.replace(/\s+/g, ' ').trim();
-    if (!q || isStatusCommandText(q)) {
+    if (!q || isStatusCommandText(q) || isDiceShortcutText(q)) {
       hideSkillSuggestions();
       return;
     }
     // メッセージ入力中の技能候補には、ダメージ判定の式は出しません（/g コマンドからは選べます）。
     const filtered = chatPaletteEntries.filter((entry) =>
       !entry.includes('ダメージ判定')
-      && entry.toLocaleLowerCase().includes(q.toLocaleLowerCase())
+      && matchesCommandQuery(entry, q)
     ).slice(0, 10);
 
     if (filtered.length === 0) {
@@ -1103,49 +1368,89 @@
       return;
     }
 
+    if (skillSuggestionQuery !== q) {
+      skillSuggestionQuery = q;
+      suggestionHighlightIndex = 0;
+    }
     skillSuggestions.replaceChildren();
-    for (const entry of filtered) {
+    if (suggestionHighlightIndex < 0 || suggestionHighlightIndex >= filtered.length) suggestionHighlightIndex = 0;
+    for (const [index, entry] of filtered.entries()) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'skill-suggestion-item';
+      button.classList.toggle('is-highlighted', index === suggestionHighlightIndex);
       button.textContent = entry;
-      button.addEventListener('click', () => {
-        chatInput.value = '';
-        chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-        insertChatInputText(entry);
-        hideSkillSuggestions();
-        chatInput.focus();
-      });
+      button.addEventListener('click', () => selectSkillSuggestion(entry));
       skillSuggestions.append(button);
     }
     skillSuggestions.hidden = false;
-    suggestionHighlightIndex = -1;
+    skillSuggestions.querySelector('.skill-suggestion-item.is-highlighted')?.scrollIntoView({ block: 'nearest' });
   };
 
-  /* /m /g /c /s /a /l コマンド。fzf風のTab補完で選択します。
-     /m = チャットタブ移動 /g = 技能選択 /c = キャラ選択 /s = シーン選択 /a = alias /l = 全情報更新 */
+  const selectSkillSuggestion = (entry) => {
+    chatInput.value = entry;
+    chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length;
+    chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    hideSkillSuggestions();
+    chatInput.focus();
+  };
+
+  const moveSkillSelection = (direction = 1) => {
+    const items = skillSuggestions.querySelectorAll('.skill-suggestion-item');
+    if (!items.length) return;
+    suggestionHighlightIndex = (suggestionHighlightIndex + direction + items.length) % items.length;
+    items.forEach((item, index) => item.classList.toggle('is-highlighted', index === suggestionHighlightIndex));
+    items[suggestionHighlightIndex].scrollIntoView({ block: 'nearest' });
+  };
+
+  /* /t /g /n /c /s /a /grep /l コマンド。fzf風のTab補完で選択します。 */
   const commandSuggestions = document.getElementById('command-suggestions');
-  let commandMode = null; // 'm' | 'g' | 'c' | 's' | 'a' | 'reload'
+  let commandMode = null; // 'commands' | 'm'(=/t チャットタブ) | 'grep' | 'g' | 'n' | 'c' | 's' | 'a' | 'reload'
   let commandMatches = [];
   let commandIndex = 0;
   let commandQuery = null;
-  // 「/m」「/g」「/c」「/s」「/a」「/l」の入力をコマンドとして扱います（半角スペースは任意）。
+  const commandDefinitions = [
+    { command: '/t', description: 'タブ切り替え' },
+    { command: '/g', description: '技能選択' },
+    { command: '/n', description: '能力値ロール' },
+    { command: '/a', description: 'エイリアス' },
+    { command: '/grep', description: 'ログ検索' },
+    { command: '/c', description: 'キャラクター切り替え' },
+    { command: '/s', description: 'シーン切り替え' },
+    { command: '/l', description: '一括更新' }
+  ];
+  // 「/」でコマンド一覧を表示します。
   // ただし、本家の「/scene シーン名」コマンドを手入力したときはセレクタに奪わず、そのまま送信させます。
   const parseCommandInput = (value) => {
+    if (/^\/\s*$/.test(value)) return { mode: 'commands', query: '' };
     if (/^\/l\s*$/i.test(value)) return { mode: 'reload', query: '' };
-    const match = value.match(/^\/([amgcs])(.*)$/);
+    // /grep は「g」の前に判定します（/g… の文字ルールで奪われないように）。/gr でも同じ動作にします。
+    const grep = value.match(/^\/(?:grep|gr)(?:\s+(.*))?$/i);
+    if (grep) return { mode: 'grep', query: grep[1] ?? '' };
+    const match = value.match(/^\/([amtgncs])(.*)$/);
     if (!match) return null;
     if (match[1] === 's' && value.toLowerCase().startsWith('/scene')) return null;
-    return { mode: match[1], query: match[2].replace(/^\s+/, '') };
+    // 内部では /m のときの名前（m）のまま扱います（/t はチャットタブ切替）。
+    return { mode: match[1] === 't' ? 'm' : match[1], query: match[2].replace(/^\s+/, '') };
   };
 
   const commandCandidates = (mode) => {
-    if (mode === 'reload') return [];
+    if (mode === 'reload' || mode === 'grep') return [];
+    if (mode === 'commands') {
+      return commandDefinitions.map(({ command, description }) => ({
+        label: `${command} — ${description}`,
+        command
+      }));
+    }
     if (mode === 'm') {
       return (latestChatState?.tabs ?? []).map((tab) => ({ label: tab.name, tab }));
     }
     if (mode === 'g') {
       return chatPaletteEntries.map((entry) => ({ label: entry, value: entry }));
+    }
+    if (mode === 'n') {
+      return ['str', 'con', 'pow', 'dex', 'app', 'siz', 'int', 'edu']
+        .map((value) => ({ label: value.toUpperCase(), value }));
     }
     if (mode === 's') {
       // シーンの切替は、実質的に本家の「/scene シーン名」チャットコマンドを送るのと同じです。
@@ -1171,7 +1476,9 @@
 
   const commandEmptyMessage = (mode) => {
     if (mode === 'm') return '一致するチャットタブがありません。';
+    if (mode === 'grep') return '絞り込み語を入れてEnterで、ログ検索欄へ移動します。';
     if (mode === 'g') return '一致する技能がありません。「更新」やパレットの「更新」で取得してください。';
+    if (mode === 'n') return '一致する能力値がありません。STR、CON、POW、DEX、APP、SIZ、INT、EDUから選べます。';
     if (mode === 's') return 'シーン候補がありません。入力欄が空の状態から取得するか、「一括取得」で取得してください。';
     if (mode === 'a') return 'aliasがありません。「設定・キャラクター情報」でaliasを登録してください。';
     return 'キャラクター候補がありません。「更新」で候補を取得してください。';
@@ -1226,7 +1533,7 @@
         commandIndex = 0;
         // 絞り込み語が空のときだけ「現在位置」から始めます（言葉を入れるとリストが変わるため先頭）。
         if (!commandQuery) {
-          // チャットタブ(/m)は現在選択中のタブの位置に、最初からハイライトを当てます。
+          // チャットタブ(/t)は現在選択中のタブの位置に、最初からハイライトを当てます。
           if (commandMode === 'm') {
             let index = commandMatches.findIndex((candidate) => candidate.tab?.selected === true);
             if (index < 0) {
@@ -1278,6 +1585,29 @@
   };
 
   const executeCommand = async () => {
+    if (commandMode === 'commands') {
+      const selected = commandMatches[commandIndex];
+      if (!selected) return;
+      chatInput.value = selected.command;
+      chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length;
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    if (commandMode === 'grep') {
+      // /grep 語句。入力欄の内容をログ検索欄へ移し、検索欄にフォーカスします。
+      //すでに検索語が入っていても、/grep の語句があれば置き換えます（空なら語句はそのまま）。
+      const query = (commandQuery ?? '').trim();
+      chatInput.value = '';
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      hideCommandSuggestions();
+      if (logSearchInput) {
+        if (query) logSearchInput.value = query;
+        logSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
+        logSearchInput.focus({ preventScroll: true });
+        logSearchInput.selectionStart = logSearchInput.selectionEnd = logSearchInput.value.length;
+      }
+      return;
+    }
     if (commandMode === 'reload') {
       chatInput.value = '';
       hideCommandSuggestions();
@@ -1318,8 +1648,8 @@
       runAliasEntry(selected.aliasIndex);
       return;
     }
-    if (commandMode === 'g') {
-      // 技能を選択したら、そのテキストを入力欄に置きます（送信はしません）。
+    if (commandMode === 'g' || commandMode === 'n') {
+      // 技能または能力値を選択したら、そのテキストを入力欄に置きます（送信はしません）。
       chatInput.value = selected.value;
       hideCommandSuggestions();
       chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length;
@@ -1392,11 +1722,16 @@
       : 'パレットの項目がありません。';
   };
 
-  const refreshChatState = async ({ force = true, includeCharacters = false } = {}) => {
+  const refreshChatState = async ({ force = true, includeCharacters = false, duringUpdate = false } = {}) => {
+    if (updatingEverything && !duringUpdate) return;
+    const requestId = ++chatStateRequestId;
     try {
       const chatState = await sendRequest('CCFOLIA_CHAT_GET_STATE', { force, includeCharacters });
+      if (requestId !== chatStateRequestId) return;
+      expectedRoomPath = chatState.roomPath;
       renderChatState(chatState);
     } catch (reason) {
+      if (requestId !== chatStateRequestId) return;
       if (!latestChatState) chatStatus.textContent = reason instanceof Error ? reason.message : String(reason);
     }
   };
@@ -1477,9 +1812,19 @@
     refreshScanButton.disabled = true;
     openChatPaletteButton.disabled = true;
     refreshChatPaletteButton.disabled = true;
-    // CCFOLIA本体側を操作して取得するので、拡張チャットのオーバーレイが開いていたら一時的に隠します。
-    await pauseChatOverlay();
+    updatingEverything = true;
+    chatStateRequestId += 1;
+    latestChatState = null;
+    selectedTabIndex = null;
+    chatTabs.replaceChildren();
+    chatLog.replaceChildren();
+    if (logSearchCount) logSearchCount.textContent = '';
+    updateChatTabIndicator();
+    chatStatus.textContent = 'チャットログを再取得しています…';
     try {
+      resetFullLog();
+      // CCFOLIA本体側を操作して取得するので、拡張チャットのオーバーレイが開いていたら一時的に隠します。
+      await pauseChatOverlay();
       status.textContent = 'キャラクター情報を取得しています…';
       // キャラ情報の取得に失敗しても、パレット・シーンの取得は続けます。
       // （パレットの人数ぶんの走査は、キャラクター選択メニューの候補からも実行できるため。）
@@ -1559,7 +1904,12 @@
           sceneCount = sceneEntries.length;
         } catch (reason) {
           console.error('[CCFOLIA ステータス変更]', reason);
-          chatStatus.textContent = `シーン一覧: ${reason.message}`;
+          // 取得できなかった（PLのときなど）は、前のセッションの残りを空欄へ戻します。
+          sceneEntries = [];
+          currentSceneName = '';
+          saveSceneEntries();
+          saveCurrentScene();
+          chatStatus.textContent = `シーン一覧: ${reason.message}（前のセッションの残りを空欄にしました）`;
         }
       }
       // 取得のためにCCFOLIA側で開いたシーン表・チャットパレット・メニューを閉じておきます。
@@ -1570,7 +1920,7 @@
       }
       // キャラクター選択メニューの読み取りはチャットの入力欄で行うため、先に開いておきます。
       await requestTimeout(sendRequest('CCFOLIA_CHAT_OPEN_DRAWER'), 10, 'チャットウィンドウを開く');
-      await refreshChatState({ force: true, includeCharacters: true });
+      await refreshChatState({ force: true, includeCharacters: true, duringUpdate: true });
       const paletteText = paletteCount !== null
         ? `、パレット${paletteCharacters && paletteCharacters > 0 ? `${paletteCharacters}キャラ分` : ''}${paletteCount}件`
         : '';
@@ -1580,6 +1930,7 @@
       status.textContent = reason instanceof Error ? reason.message : String(reason);
     } finally {
       // 先にオーバーレイを元に戻してから、制御ウィンドウ側の後片付けをします。
+      updatingEverything = false;
       await resumeChatOverlay();
       refreshScanButton.disabled = false;
       openChatPaletteButton.disabled = false;
@@ -1798,7 +2149,14 @@
     if (!renderCommandSuggestions()) showSkillSuggestions(chatInput.value);
   });
   // 検索語が変わったら、最新の状態をもう一度描き直して絞り込みを反映します。
+  // 検索欄に「/」と入れた時点で、メッセージ入力欄へ移ります（検索欄は空に戻します）。
   logSearchInput?.addEventListener('input', () => {
+    if (logSearchInput.value.trim() === '/') {
+      logSearchQuery = '';
+      logSearchInput.value = '';
+      focusChatInput();
+      return;
+    }
     logSearchQuery = logSearchInput.value;
     if (latestChatState) renderChatState(latestChatState);
   });
@@ -1807,21 +2165,41 @@
   // content.js が CCFOLIA_CHAT_LOG_PUSH で最新メッセージ一覧を送ってくるので書き換えます。
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type !== 'CCFOLIA_CHAT_LOG_PUSH' || !Array.isArray(message.messages)) return undefined;
-    if (!latestChatState) return undefined; // 初回は通常のポーリングで取得します。
+    if (typeof message.roomPath !== 'string') return undefined;
+    if (message.roomPath !== expectedRoomPath || !latestChatState) {
+      expectedRoomPath = message.roomPath;
+      void refreshChatState({ force: true });
+      return undefined;
+    }
     const previous = latestChatState.messages ?? [];
     const incoming = message.messages;
-    if (incoming.length === previous.length
-      && JSON.stringify(incoming.at(-1) ?? '') === JSON.stringify(previous.at(-1) ?? '')) return undefined;
+    if (JSON.stringify(incoming) === JSON.stringify(previous)) return undefined;
     renderChatState({ ...latestChatState, messages: incoming });
     return undefined;
   });
 
   chatInput.addEventListener('keydown', (event) => {
     if (event.isComposing || event.keyCode === 229) return;
-    // 候補の操作は「これから入力欄に入っているのが本物のコマンド入力（/m /g /g /s /a）のときだけ」有効です。
-    // 入力欄が空のまま候補操作の状態が残っていても、Tabで選択が動かないようにします。
-    const commandActive = Boolean(!commandSuggestions?.hidden && commandMatches.length
-      && parseCommandInput(chatInput.value));
+    const skillActive = Boolean(!skillSuggestions?.hidden
+      && skillSuggestions.querySelector('.skill-suggestion-item'));
+    if (skillActive && event.key === 'Tab') {
+      event.preventDefault();
+      moveSkillSelection(event.shiftKey ? -1 : 1);
+      return;
+    }
+    if (skillActive && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      event.preventDefault();
+      moveSkillSelection(event.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    if (skillActive && event.key === 'Escape') {
+      event.preventDefault();
+      hideSkillSuggestions();
+      return;
+    }
+    // 候補の操作は「これから入力欄に入っているのが本物のコマンド入力のときだけ」有効です。
+    const activeCommand = parseCommandInput(chatInput.value);
+    const commandActive = Boolean(!commandSuggestions?.hidden && activeCommand && commandMatches.length);
     // Tab補完（fzf風）。Tabで下へ、Shift+Tabで上へ選択を移動します（入力欄は書き換えません）。
     if (event.key === 'Tab' && commandActive) {
       event.preventDefault();
@@ -1859,7 +2237,14 @@
     }
     if (event.key !== 'Enter' || event.shiftKey) return;
     event.preventDefault();
-    // コマンド入力中（/m /g /c）は候補の実行を優先し、通常のメッセージ送信は行いません。
+    if (skillActive) {
+      const selected = skillSuggestions.querySelectorAll('.skill-suggestion-item')[suggestionHighlightIndex];
+      if (selected) {
+        selectSkillSuggestion(selected.textContent);
+        return;
+      }
+    }
+    // コマンド入力中は候補の実行を優先し、通常のメッセージ送信は行いません。
     if (parseCommandInput(chatInput.value)) {
       renderCommandSuggestions();
       void executeCommand();

@@ -265,8 +265,8 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: .
 .chat-tab-badge { position: absolute; top: 3px; right: 1px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 4px var(--accent); }
 #refresh-scan { flex: 0 0 auto; padding: 6px 12px; color: #b7bdc9; }
 
-/* 発言者行 */
-.speaker-row { display: flex; align-items: center; gap: 6px; min-height: 46px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+/* 発言者行（枠・背景なし。アイコン・キャラクター選択・パレットボタンをそのまま並べます） */
+.speaker-row { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 2px 0; }
 .speaker-row label { color: #8a91a0; font-size: .846rem; white-space: nowrap; }
 .speaker-avatar { flex: 0 0 30px; width: 30px; height: 30px; border-radius: 6px; object-fit: cover; background: rgb(52 57 70); }
 .speaker-row input { flex: 1 1 auto; width: 60px; padding: 5px 8px; }
