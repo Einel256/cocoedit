@@ -79,7 +79,7 @@
             <button id="alias-add" type="button">追加</button>
             <button id="alias-cancel" type="button" hidden>やめる</button>
           </div>
-          <textarea id="alias-text" rows="3" placeholder="alias内容"></textarea>
+          <textarea id="alias-text" rows="3" placeholder=";で発言を区切る（#delay 0.8;で次の発言まで0.8秒待機）"></textarea>
           <ul id="alias-list" class="alias-list" aria-label="登録済みエイリアス"></ul>
           <output id="alias-status" role="status"></output>
         </section>
@@ -106,7 +106,7 @@
         <div class="speaker-row">
           <img id="speaker-avatar" class="speaker-avatar" alt="">
           <select id="character-choice"></select>
-          <button id="open-chat-palette" type="button" aria-label="チャットパレットを開く" title="チャットパレットを開く">
+          <button id="open-chat-palette" type="button" aria-label="チャットパレットを開く" title="チャットパレットを開く" disabled>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 5.5h15v13h-15z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7.5 9h9M7.5 12h9M7.5 15h5.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
           </button>
         </div>

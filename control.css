@@ -265,15 +265,16 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: .
 .chat-tab-badge { position: absolute; top: 3px; right: 1px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 4px var(--accent); }
 #refresh-scan { flex: 0 0 auto; padding: 6px 12px; color: #b7bdc9; }
 
-/* 発言者行（枠・背景なし。アイコン・キャラクター選択・パレットボタンをそのまま並べます） */
+/* 発言者行（枠・背景なし。アイコン・キャラクター選択・各種ボタンをそのまま並べます） */
 .speaker-row { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 2px 0; }
 .speaker-row label { color: #8a91a0; font-size: .846rem; white-space: nowrap; }
 .speaker-avatar { flex: 0 0 30px; width: 30px; height: 30px; border-radius: 6px; object-fit: cover; background: rgb(52 57 70); }
 .speaker-row input { flex: 1 1 auto; width: 60px; padding: 5px 8px; }
 .speaker-row select { flex: 1 1 auto; min-width: 120px; padding: 5px 6px; }
+.speaker-row button:disabled { cursor: default; opacity: .5; }
 #open-chat-palette { display: grid; flex: 0 0 30px; width: 30px; height: 30px; place-items: center; padding: 5px; border: none; border-radius: 6px; background: transparent; color: #a9b0bd; }
-#open-chat-palette svg { width: 18px; height: 18px; fill: currentColor; }
 #open-chat-palette:hover:not(:disabled) { color: #fff; background: rgb(255 255 255 / .1); }
+#open-chat-palette svg { width: 18px; height: 18px; fill: currentColor; }
 
 /* 技能値パレット（開いている間、上の領域いっぱいまで広がるオーバーレイで表示します。下端はダイス行の上） */
 .chat-palette-panel {
@@ -328,7 +329,6 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: .
 .alias-list li { display: flex; align-items: center; gap: 6px; }
 .alias-list li > button:first-child { flex: 0 0 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: rgb(255 255 255 / .06); color: var(--text); font-size: .923rem; }
 .alias-list li > button:first-child:hover { border-color: rgb(255 255 255 / .3); }
-.alias-list li > span { flex: 1 1 auto; overflow: hidden; color: #8a91a0; font-size: .846rem; text-overflow: ellipsis; white-space: nowrap; }
 .alias-list li > button:last-child { flex: 0 0 auto; min-height: 22px; padding: 2px 8px; border: none; border-radius: 6px; background: transparent; color: #9aa1ad; font-size: .885rem; }
 .alias-list li > button:last-child:hover { color: #ff9aa2; }
 /* aliasごとのボタン列表示切替・順番入替ボタン */

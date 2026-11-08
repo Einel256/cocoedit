@@ -449,12 +449,28 @@
     }
   };
   let chatPaletteMap = readPaletteMap();
+  let legacyPaletteEntries = null;
   const savePaletteMap = () => localStorage.setItem(PALETTE_MAP_KEY, JSON.stringify(chatPaletteMap));
+  const clearLegacyPaletteEntries = () => {
+    legacyPaletteEntries = [];
+    localStorage.setItem(PALETTE_STORAGE_KEY, JSON.stringify(legacyPaletteEntries));
+  };
+  const replaceChatPaletteMap = (entriesByName) => {
+    chatPaletteMap = entriesByName;
+    savePaletteMap();
+    clearLegacyPaletteEntries();
+  };
+  const clearChatPaletteEntries = (name) => {
+    chatPaletteMap = name
+      ? { ...chatPaletteMap, [name]: [] }
+      : {};
+    savePaletteMap();
+    clearLegacyPaletteEntries();
+  };
   // 現在の発言者（キャラクター選択プルダウン）のキャラ名。
   const speakerCharacterName = () => characterChoice.selectedOptions[0]?.dataset.characterName ?? '';
   // 発言者用のパレット。キャラごとの保存がなければ、旧フラット配列へフォールバックします。
   // フォールバックは参照をメモ化します（毎回JSONを解析すると参照が変わり、無駄に再描画するため）。
-  let legacyPaletteEntries = null;
   const paletteEntriesFor = (name) => {
     if (name && Array.isArray(chatPaletteMap[name])) return chatPaletteMap[name];
     if (!legacyPaletteEntries) legacyPaletteEntries = readStoredPalette() ?? [];
@@ -465,10 +481,14 @@
     // 旧キーにも書き込みます（キャラごとの保存がない・取得前の環境向けフォールバック）。
     localStorage.setItem(PALETTE_STORAGE_KEY, JSON.stringify(chatPaletteEntries));
   };
+  const syncChatPaletteButton = () => {
+    openChatPaletteButton.disabled = chatPaletteEntries.length === 0;
+  };
   // 表示・入力補助で使うパレットを、現在の発言者のぶんへ切り替えます。
   // 変わったときだけ技能パレットの描画を更新します。
   const syncPaletteEntries = () => {
     const entries = paletteEntriesFor(speakerCharacterName());
+    syncChatPaletteButton();
     if (chatPaletteEntries === entries) return;
     chatPaletteEntries = entries;
     renderChatPalette();
@@ -1186,16 +1206,43 @@
       chatInput.dispatchEvent(new Event('input', { bubbles: true }));
       return;
     }
-    // 押したらすぐ送信します。改行で分かれたaliasは、行ごとに別の発言として送ります（空行は送りません）。
-    // 入力履歴・送信キュー・ステータスコマンド判定は送信ボタンと同じ経路です。
-    const lines = entry.text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line);
-    if (!lines.length) return;
+    const messages = [];
+    let delayBeforeNext = 0;
+    let hasPendingDelay = false;
+    for (const segment of entry.text.split(';')) {
+      const line = segment.trim();
+      if (!line) continue;
+      if (/^#delay\b/i.test(line)) {
+        const match = line.match(/^#delay\s+(\d+(?:\.\d+)?|\.\d+)$/i);
+        const seconds = match ? Number(match[1]) : NaN;
+        if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
+          aliasStatus.textContent = '遅延指定は「#delay 0.8」の形式で、0〜86400秒を指定してください。';
+          return;
+        }
+        delayBeforeNext = seconds * 1000;
+        hasPendingDelay = true;
+        continue;
+      }
+      const sceneCommand = line.match(/^\/s(.*)$/i);
+      if (sceneCommand && sceneCommand[1].trim() && !/^\/scene(?:\s|$)/i.test(line)) {
+        messages.push({ sceneQuery: sceneCommand[1].trim(), delayBefore: delayBeforeNext });
+      } else {
+        messages.push({ text: line, delayBefore: delayBeforeNext });
+      }
+      delayBeforeNext = 0;
+      hasPendingDelay = false;
+    }
+    if (hasPendingDelay) {
+      aliasStatus.textContent = '遅延指定の後に送信する内容を入力してください。';
+      return;
+    }
+    if (!messages.length) return;
     hideCommandSuggestions();
     const selectedTab = selectedTabIndex;
-    for (const line of lines) {
-      rememberInputHistory(line);
+    for (const message of messages) {
+      rememberInputHistory(message.text);
       pendingMessages.push({
-        text: line,
+        ...message,
         tabIndex: selectedTab !== null && selectedTab !== '' ? Number(selectedTab) : null
       });
     }
@@ -1213,7 +1260,6 @@
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = entry.name;
-      button.title = entry.text;
       button.setAttribute('aria-label', `エイリアス「${entry.name}」を編集`);
       button.addEventListener('click', () => {
         aliasEditingIndex = index;
@@ -1222,9 +1268,6 @@
         renderAliasEditor();
       });
       row.append(button);
-      const preview = document.createElement('span');
-      preview.textContent = '（' + entry.text.replace(/\s+/g, ' ').trim().slice(0, 40) + '）';
-      row.append(preview);
       // このaliasのボタン列表示の切り替え。
       const visibilityButton = document.createElement('button');
       visibilityButton.type = 'button';
@@ -1336,8 +1379,7 @@
 
   // ステータスコマンド形式（1s-10, 2h20 など）か簡易判定し、候補表示を抑制する。
   const isStatusCommandText = (text) => /^(?:\d+(?:(?:\s*,\s*|\s+)\d+)*)?\s*(hp|mp|san|h|m|s)(\s*)(=|[+-])?(\s*)(\d+)$/i.test(text.trim());
-  const isDiceShortcutText = (text) => /^(?:1|1d|1d1|1d10|1d100)$/i.test(text.trim())
-    || text.trim() === '1d100<={SAN} 【正気度ロール】';
+  const isDiceShortcutText = (text) => /^(?:1|1d|1d1|1d10|1d100)$/i.test(text.trim());
 
   let suggestionHighlightIndex = -1;
   let skillSuggestionQuery = null;
@@ -1458,7 +1500,7 @@
     }
     if (mode === 'a') {
       // aliasは名前で選択すると内容を入力欄へ入れます。
-      return aliasEntries.map((entry, index) => ({ label: entry.name, title: entry.name + '：' + entry.text.replace(/\n/g, ' / '), aliasIndex: index }));
+      return aliasEntries.map((entry, index) => ({ label: entry.name, aliasIndex: index }));
     }
     return (latestChatState?.characters ?? [])
       .map((character) => ({
@@ -1700,6 +1742,7 @@
 
   const renderChatPalette = () => {
     chatPaletteItems.replaceChildren();
+    syncChatPaletteButton();
     for (const entry of chatPaletteEntries) {
       const item = document.createElement('li');
       const button = document.createElement('button');
@@ -1866,10 +1909,7 @@
           items = fallback.items;
           failed = fallback.failed;
         }
-        if (Object.keys(items).length) {
-          chatPaletteMap = { ...chatPaletteMap, ...items };
-          savePaletteMap();
-        }
+        replaceChatPaletteMap(items);
         // 元の発言者へ戻します（content側でも戻すため、呼び出しは二重になっても害はありません）。
         if (originalName) {
           try {
@@ -1894,6 +1934,9 @@
           renderChatPalette();
         } catch (reason) {
           console.error('[CCFOLIA ステータス変更]', reason);
+          clearChatPaletteEntries(speakerCharacterName());
+          syncPaletteEntries();
+          renderChatPalette();
           chatStatus.textContent = `チャットパレット: ${reason.message}`;
         }
       }
@@ -1933,7 +1976,7 @@
       updatingEverything = false;
       await resumeChatOverlay();
       refreshScanButton.disabled = false;
-      openChatPaletteButton.disabled = false;
+      syncChatPaletteButton();
       refreshChatPaletteButton.disabled = false;
       // 技能表（チャットパレット面板）と設定画面を閉じて、すっきりした状態にします。
       chatPalettePanel.hidden = true;
@@ -2017,11 +2060,14 @@
       await fetchChatPaletteEntries();
       renderChatPalette();
     } catch (reason) {
+      clearChatPaletteEntries(speakerCharacterName());
+      syncPaletteEntries();
+      renderChatPalette();
       chatStatus.textContent = reason.message;
       chatPalettePanel.hidden = true;
     } finally {
       await resumeChatOverlay();
-      openChatPaletteButton.disabled = false;
+      syncChatPaletteButton();
       refreshChatPaletteButton.disabled = false;
     }
   };
@@ -2111,14 +2157,27 @@
       while (pendingMessages.length) {
         const message = pendingMessages.shift();
         try {
-          await sendRequest('CCFOLIA_CHAT_SEND', {
-            text: message.text,
-            ...(message.tabIndex !== null ? { tabIndex: message.tabIndex } : {})
-          });
+          if (message.delayBefore > 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, message.delayBefore));
+          }
+          if (message.sceneQuery !== undefined) {
+            if (!sceneEntries.length) await ensureSceneEntries();
+            const sceneName = sceneEntries.find((name) => matchesCommandQuery(name, message.sceneQuery));
+            if (!sceneName) throw new Error(`「${message.sceneQuery}」に一致するシーンがありません。`);
+            await sendRequest('CCFOLIA_CHAT_SEND', { text: `/scene ${sceneName}` });
+            currentSceneName = sceneName;
+            saveCurrentScene();
+            chatStatus.textContent = `シーンを「${sceneName}」に切り替えました。`;
+          } else {
+            await sendRequest('CCFOLIA_CHAT_SEND', {
+              text: message.text,
+              ...(message.tabIndex !== null ? { tabIndex: message.tabIndex } : {})
+            });
+          }
           void refreshChatState();
         } catch (reason) {
           chatStatus.textContent = reason.message;
-          if (!chatInput.value && pendingMessages.length === 0) {
+          if (message.text && !chatInput.value && pendingMessages.length === 0) {
             chatInput.value = message.text;
             chatInput.dispatchEvent(new Event('input', { bubbles: true }));
           }
