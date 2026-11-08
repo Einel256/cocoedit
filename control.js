@@ -1177,6 +1177,17 @@
       aliasButtons.append(button);
     }
   };
+  const parseRepeatCommand = (text) => {
+    const match = String(text).match(/^(\d+)\s*:\s*([\s\S]*)$/);
+    if (!match) return null;
+    const count = Number(match[1]);
+    if (!Number.isSafeInteger(count) || count < 1 || count > 1000) {
+      return { error: '繰り返し回数は1〜1000回で指定してください。' };
+    }
+    if (!match[2].trim()) return { error: '回数の後に送信するコマンドを入力してください。' };
+    return { count, text: match[2].trim() };
+  };
+  const isDiceFormula = (formula) => /^(?:\d+)?[dD]\d+(?:[+-](?:(?:\d+)?[dD]\d+|\d+))*$/.test(formula);
   const runAliasEntry = (index) => {
     const entry = aliasEntries[index];
     if (!entry) return;
@@ -1211,7 +1222,7 @@
           return;
         }
         const [, variableName, formula] = declaration;
-        if (!/^(?:\d+)?[dD]\d+(?:[+-](?:(?:\d+)?[dD]\d+|\d+))*$/.test(formula.trim())) {
+        if (!isDiceFormula(formula.trim())) {
           aliasStatus.textContent = `変数「${variableName}」にはダイス式を指定してください（例: int ${variableName} = 1d8;）。`;
           return;
         }
@@ -1230,7 +1241,23 @@
       if (sceneCommand && sceneCommand[1].trim() && !/^\/scene(?:\s|$)/i.test(line)) {
         messages.push({ sceneQuery: sceneCommand[1].trim(), aliasContext, delayBefore: delayBeforeNext });
       } else {
-        messages.push({ text: line, aliasContext, delayBefore: delayBeforeNext });
+        const repeated = parseRepeatCommand(line);
+        if (repeated?.error) {
+          aliasStatus.textContent = repeated.error;
+          return;
+        }
+        if (repeated) {
+          for (let repeatIndex = 0; repeatIndex < repeated.count; repeatIndex += 1) {
+            messages.push({
+              text: repeated.text,
+              historyText: line,
+              aliasContext,
+              delayBefore: repeatIndex === 0 ? delayBeforeNext : 0
+            });
+          }
+        } else {
+          messages.push({ text: line, aliasContext, delayBefore: delayBeforeNext });
+        }
       }
       delayBeforeNext = 0;
       hasPendingDelay = false;
@@ -2207,10 +2234,14 @@
               text: message.rollFormula,
               ...(message.tabIndex !== null ? { tabIndex: message.tabIndex } : {})
             });
-            const value = await waitForDiceResult(message.rollFormula, previousSignatures);
-            message.aliasContext.variables[message.variableName] = value;
-            message.aliasContext.failedVariables.delete(message.variableName);
-            chatStatus.textContent = `変数「${message.variableName}」に${value}を設定しました。`;
+            if (message.variableName) {
+              const value = await waitForDiceResult(message.rollFormula, previousSignatures);
+              message.aliasContext.variables[message.variableName] = value;
+              message.aliasContext.failedVariables.delete(message.variableName);
+              chatStatus.textContent = `変数「${message.variableName}」に${value}を設定しました。`;
+            } else {
+              await waitForDiceResult(message.rollFormula, previousSignatures);
+            }
           } else if (message.sceneQuery !== undefined) {
             if (!sceneEntries.length) await ensureSceneEntries();
             const query = message.aliasContext
@@ -2251,15 +2282,24 @@
     if (sendButton.disabled) return;
     const originalText = chatInput.value;
     if (!originalText.trim()) return;
+    const repeated = parseRepeatCommand(originalText);
+    if (repeated?.error) {
+      chatStatus.textContent = repeated.error;
+      return;
+    }
     rememberInputHistory(originalText);
     // CCFOLIA側の送信処理を待たず、入力欄を即座にクリアします（失敗時は元の内容に戻します）。
     chatInput.value = '';
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     const selectedTab = selectedTabIndex;
-    pendingMessages.push({
-      text: originalText,
-      tabIndex: selectedTab !== null && selectedTab !== '' ? Number(selectedTab) : null
-    });
+    const tabIndex = selectedTab !== null && selectedTab !== '' ? Number(selectedTab) : null;
+    if (repeated) {
+      for (let repeatIndex = 0; repeatIndex < repeated.count; repeatIndex += 1) {
+        pendingMessages.push({ text: repeated.text, tabIndex });
+      }
+    } else {
+      pendingMessages.push({ text: originalText, tabIndex });
+    }
     void sendPendingMessages();
   });
   chatInput.addEventListener('input', () => {
