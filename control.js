@@ -1224,7 +1224,7 @@
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = entry.name;
-      button.setAttribute('aria-label', `エイリアス「${entry.name}」を入力欄に入力`);
+      button.setAttribute('aria-label', `関数「${entry.name}」を入力欄に入力`);
       button.addEventListener('click', () => runAliasEntry(index));
       aliasButtons.append(button);
     }
@@ -1431,7 +1431,7 @@
     }
     return result !== 0;
   };
-  /* エイリアス本文（if文・変数定義・/s・/t /c /a・n:文面・#delay・送文）を、
+  /* 関数本文（if文・変数定義・/s・/t /c /f・n:文面・#delay・送文）を、
      送信キューに入れるメッセージの並びへ組み立てます。if文はここでは評価せず、
      分岐の中身を先に組み立てたaliasIfメッセージとして並べ、送信時に評価して
      当てはまる側をキューの先頭へ差し込めます。文法エラーは error に入れて返します。 */
@@ -1515,10 +1515,10 @@
         if (delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
         messages.push(message);
       } else {
-        const aliasCommand = statement.match(/^\/([cta])(?:\s+(.*)|([^\s].*))?$/i);
+        const aliasCommand = statement.match(/^\/([ctaf])(?:\s+(.*)|([^\s].*))?$/i);
         if (aliasCommand) {
           const message = {
-            aliasCommand: aliasCommand[1].toLowerCase(),
+            aliasCommand: aliasCommand[1].toLowerCase() === 'f' ? 'a' : aliasCommand[1].toLowerCase(),
             commandQuery: (aliasCommand[2] ?? aliasCommand[3] ?? '').trim(),
             compactCommand: Boolean(aliasCommand[3]),
             commandText: statement,
@@ -1590,7 +1590,7 @@
     const messages = compiled.messages;
     if (!messages.length) return;
     hideCommandSuggestions();
-    setAliasExecutionStatus(`エイリアス「${entry.name}」を実行しています。`);
+    setAliasExecutionStatus(`関数「${entry.name}」を実行しています。`);
     const queuedMessages = [];
     for (const message of messages) {
       rememberInputHistory(message.historyText ?? message.text);
@@ -1616,7 +1616,7 @@
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = entry.name;
-      button.setAttribute('aria-label', `エイリアス「${entry.name}」を編集`);
+      button.setAttribute('aria-label', `関数「${entry.name}」を編集`);
       button.addEventListener('click', () => {
         aliasEditingIndex = index;
         aliasNameInput.value = entry.name;
@@ -1631,7 +1631,7 @@
       visibilityButton.textContent = isAliasButtonVisible(entry) ? 'ボタン：表示' : 'ボタン：非表示';
       visibilityButton.setAttribute('aria-pressed', String(isAliasButtonVisible(entry)));
       visibilityButton.title = 'ボタン列に表示するか、このaliasだけ隠すかを切り替えます';
-      visibilityButton.setAttribute('aria-label', `エイリアス「${entry.name}」のボタン列表示を切り替え`);
+      visibilityButton.setAttribute('aria-label', `関数「${entry.name}」のボタン列表示を切り替え`);
       visibilityButton.addEventListener('click', () => {
         entry.buttonVisible = !isAliasButtonVisible(entry);
         saveAliasEntries();
@@ -1645,7 +1645,7 @@
       upButton.className = 'alias-reorder';
       upButton.textContent = '↑';
       upButton.title = 'このaliasを上へ移動します';
-      upButton.setAttribute('aria-label', `エイリアス「${entry.name}」を上へ移動`);
+      upButton.setAttribute('aria-label', `関数「${entry.name}」を上へ移動`);
       upButton.disabled = index === 0;
       upButton.addEventListener('click', () => {
         if (index === 0) return;
@@ -1662,7 +1662,7 @@
       downButton.className = 'alias-reorder';
       downButton.textContent = '↓';
       downButton.title = 'このaliasを下へ移動します';
-      downButton.setAttribute('aria-label', `エイリアス「${entry.name}」を下へ移動`);
+      downButton.setAttribute('aria-label', `関数「${entry.name}」を下へ移動`);
       downButton.disabled = index >= aliasEntries.length - 1;
       downButton.addEventListener('click', () => {
         if (index >= aliasEntries.length - 1) return;
@@ -1678,7 +1678,7 @@
       deleteButton.type = 'button';
       deleteButton.className = 'alias-delete';
       deleteButton.textContent = '削除';
-      deleteButton.setAttribute('aria-label', `エイリアス「${entry.name}」を削除`);
+      deleteButton.setAttribute('aria-label', `関数「${entry.name}」を削除`);
       deleteButton.addEventListener('click', () => {
         aliasEntries.splice(index, 1);
         saveAliasEntries();
@@ -1699,7 +1699,7 @@
     const name = aliasNameInput.value.trim();
     const text = aliasTextInput.value.replace(/\r?\n/g, '\n');
     if (!name) {
-      aliasStatus.textContent = 'alias名を入力してください。';
+      aliasStatus.textContent = '関数名を入力してください。';
       return;
     }
     if (!text.trim()) {
@@ -1722,8 +1722,8 @@
     }
     saveAliasEntries();
     aliasStatus.textContent = isEditing
-      ? `alias「${name}」を保存しました。`
-      : `alias「${name}」を登録しました。`;
+      ? `関数「${name}」を保存しました。`
+      : `関数「${name}」を登録しました。`;
     renderAliasEditor();
     if (!isEditing) resetAliasEditor();
     renderAliasButtons();
@@ -1802,7 +1802,7 @@
     items[suggestionHighlightIndex].scrollIntoView({ block: 'nearest' });
   };
 
-  /* /t /g /n /c /s /a /grep /l コマンド。fzf風のTab補完で選択します。 */
+  /* /t /g /n /c /s /f /grep /l コマンド。fzf風のTab補完で選択します。 */
   const commandSuggestions = document.getElementById('command-suggestions');
   let commandMode = null; // 'commands' | 'm'(=/t チャットタブ) | 'grep' | 'g' | 'n' | 'c' | 's' | 'a' | 'v'(=/vc) | 'w'(=/vp) | 'reload'
   let commandMatches = [];
@@ -1814,12 +1814,12 @@
     { command: '/t', description: 'タブ切り替え' },
     { command: '/g', description: '技能選択' },
     { command: '/n', description: '能力値ロール' },
-    { command: '/a', description: 'エイリアス' },
+    { command: '/f', description: '関数' },
     { command: '/grep', description: 'ログ検索' },
-    { command: '/c', description: 'キャラクター切り替え' },
-    { command: '/s', description: 'シーン切り替え' },
-    { command: '/vc', description: '盤面のキャラ出し入れ' },
-    { command: '/vp', description: 'スクリーンパネルの表示切替' },
+    { command: '/c', description: '探索者選択' },
+    { command: '/s', description: 'シーン選択' },
+    { command: '/vc', description: 'マイキャラ表示切替' },
+    { command: '/vp', description: 'パネル表示切替' },
     { command: '/l', description: '一括更新' }
   ];
   // 行式リストコマンド（/vc=マイキャラクター、/vp=スクリーンパネル）の共通仕様。
@@ -1880,11 +1880,12 @@
     if (piece) return { mode: 'v', query: piece[1] ?? '' };
     const screenPanel = value.match(/^\/vp(?:\s+(.*))?$/i);
     if (screenPanel) return { mode: 'w', query: screenPanel[1] ?? '' };
-    const match = value.match(/^\/([amtgncs])(.*)$/);
+    const match = value.match(/^\/([amtfgncs])(.*)$/);
     if (!match) return null;
     if (match[1] === 's' && value.toLowerCase().startsWith('/scene')) return null;
     // 内部では /m のときの名前（m）のまま扱います（/t はチャットタブ切替）。
-    return { mode: match[1] === 't' ? 'm' : match[1], query: match[2].replace(/^\s+/, '') };
+    const mode = match[1] === 't' ? 'm' : ['a', 'f'].includes(match[1]) ? 'a' : match[1];
+    return { mode, query: match[2].replace(/^\s+/, '') };
   };
 
   const commandCandidates = (mode) => {
@@ -1939,7 +1940,7 @@
     if (mode === 'g') return '一致する技能がありません。「更新」やパレットの「更新」で取得してください。';
     if (mode === 'n') return '一致する能力値がありません。STR、CON、POW、DEX、APP、SIZ、INT、EDUから選べます。';
     if (mode === 's') return 'シーン候補がありません。入力欄が空の状態から取得するか、「一括取得」で取得してください。';
-    if (mode === 'a') return 'aliasがありません。「設定・キャラクター情報」でaliasを登録してください。';
+    if (mode === 'a') return '関数がありません。「設定・キャラクター情報」で関数を登録してください。';
     if (mode === 'v') return '一致するキャラクターがありません。マイキャラクター一覧から取得してください。';
     if (mode === 'w') return '一致するスクリーンパネルがありません。スクリーンパネル一覧から取得してください。';
     return 'キャラクター候補がありません。「更新」で候補を取得してください。';
@@ -2863,10 +2864,10 @@
                 ?? matches[0];
               if (!selected) {
                 if (!(await sendUnmatchedCompactCommand())) {
-                  throw new Error(`「${query}」に一致するエイリアスがありません。`);
+                  throw new Error(`「${query}」に一致する関数がありません。`);
                 }
               } else {
-                if ((message.aliasDepth ?? 0) >= 20) throw new Error('エイリアス呼び出しが深すぎます（最大20段）。');
+                if ((message.aliasDepth ?? 0) >= 20) throw new Error('関数呼び出しが深すぎます（最大20段）。');
                 runAliasEntry(selected.index, {
                   front: true,
                   depth: (message.aliasDepth ?? 0) + 1,

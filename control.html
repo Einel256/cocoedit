@@ -68,19 +68,19 @@
         <h2>キャラクター情報と番号割り当て</h2>
         <div id="characters" aria-label="キャラクター番号割り当て"></div>
         <output id="status" role="status">キャラ情報未取得</output>
-        <section class="alias-settings" aria-label="エイリアス設定">
+        <section class="alias-settings" aria-label="関数設定">
           <div class="alias-editor">
-            <strong>エイリアス（alias）</strong>
+            <strong>関数</strong>
             <button id="alias-editor-mode" type="button" aria-pressed="false">大きくする</button>
           </div>
           <div class="alias-editor">
-            <label for="alias-name">alias名</label>
-            <input id="alias-name" type="text" placeholder="alias名" maxlength="20">
+            <label for="alias-name">関数名</label>
+            <input id="alias-name" type="text" placeholder="関数名" maxlength="20">
             <button id="alias-add" type="button">追加</button>
             <button id="alias-cancel" type="button" hidden>やめる</button>
           </div>
-          <textarea id="alias-text" rows="3" placeholder=";で区切る（#delay 0.8;、int a = 1d8;、3:コマンド）"></textarea>
-          <ul id="alias-list" class="alias-list" aria-label="登録済みエイリアス"></ul>
+          <textarea id="alias-text" rows="3" placeholder="関数の内容を入力"></textarea>
+          <ul id="alias-list" class="alias-list" aria-label="関数一覧"></ul>
           <output id="alias-status" role="status"></output>
         </section>
         <section class="alias-settings" aria-label="設定のバックアップ">
@@ -89,7 +89,7 @@
             <button id="settings-export" type="button">書き出す</button>
             <button id="settings-import" type="button">読み込む</button>
           </div>
-          <textarea id="settings-io-json" rows="3" placeholder="「書き出す」で設定がここに出ます。コピーして保管してください。読み込むときは貼り付けて「読み込む」を押します。"></textarea>
+          <textarea id="settings-io-json" rows="3" placeholder="「書き出す」で設定がここに出ます。読み込むときは設定を貼り付けて「読み込む」を押します。"></textarea>
         </section>
       </details>
 
@@ -122,7 +122,7 @@
           <output id="chat-palette-status" role="status"></output>
         </section>
         <div id="dice-shortcuts" class="dice-shortcuts" aria-label="ダイスショートカット"></div>
-        <div id="alias-buttons" class="alias-buttons" aria-label="エイリアスボタン"></div>
+        <div id="alias-buttons" class="alias-buttons" aria-label="関数ボタン"></div>
         <div class="message-composer">
           <textarea id="chat-input" rows="3" placeholder="メッセージを入力" aria-label="メッセージを入力"></textarea>
           <div id="skill-suggestions" class="skill-suggestions" hidden role="listbox" aria-label="技能候補"></div>
