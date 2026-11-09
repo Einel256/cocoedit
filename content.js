@@ -472,8 +472,7 @@
 
   // 能力値ダイス（「str1」「con3」など）をCCFOLIA本体の入力欄から送ったときも、
   // 変換後のCCBダイス文に置き換えて送ります。
-  let handlingStatCommand = false;
-  const executeStatCommand = async (textarea, values) => {
+  let handlingStatCommand = false;  const executeStatCommand = async (textarea, values) => {
     if (handlingStatCommand) return;
     handlingStatCommand = true;
     try {
@@ -501,6 +500,55 @@
     }
   };
 
+  /* 「n:文面」の繰り返し送信。CCFOLIA本体の入力欄でも使えるように、
+     送信の横取り（interceptChatCommand）で展開します。1行ごとに、行頭が
+     「数字:」の形ならその文を数字の回数だけ送る文に置き換えます。
+     全角数字・全角コロンも読みます。回数は拡張チャットと同じ1〜1000回です。 */
+  const parseRepeatCommandLines = (value) => {
+    const expandLine = (line) => {
+      const normalized = line
+        .replace(/[０-９]/g, (character) => String.fromCharCode(character.charCodeAt(0) - 0xFEE0))
+        .replace(/：/g, ':');
+      const match = normalized.match(/^\s*(\d+)\s*:\s*(.+)$/);
+      if (!match) return null;
+      const count = Number(match[1]);
+      const text = match[2].trim();
+      if (!Number.isSafeInteger(count) || count < 1 || count > 1000 || !text) return null;
+      return Array.from({ length: count }, () => text);
+    };
+    const lines = String(value ?? '').split(/\r?\n/);
+    const expanded = [];
+    let hasRepeat = false;
+    for (const line of lines) {
+      const repeated = expandLine(line);
+      if (repeated) {
+        hasRepeat = true;
+        expanded.push(...repeated);
+      } else {
+        expanded.push(line);
+      }
+    }
+    // 繰り返し指定が1行でもあれば、置き換え後の行の並びを返します。
+    return hasRepeat ? expanded : null;
+  };
+  let handlingRepeatCommand = false;
+  const executeRepeatCommand = async (textarea, lines) => {
+    if (handlingRepeatCommand) return;
+    handlingRepeatCommand = true;
+    try {
+      clearReactTextarea(textarea);
+      // 1行=1送信のメッセージとして、順番にCCFOLIAへ渡します。
+      for (const line of lines) {
+        await sendChatText({ text: line });
+      }
+      log(`n:の繰り返し送信で${lines.length}件を送信しました。`);
+    } catch (reason) {
+      error('繰り返し送信（n:文面）を実行できませんでした。', reason);
+    } finally {
+      handlingRepeatCommand = false;
+    }
+  };
+
   const interceptChatCommand = (event, textarea) => {
     if (handlingChatCommand) {
       event.preventDefault();
@@ -509,6 +557,29 @@
     }
     const commands = parseChatCommands(textarea.value);
     if (!commands) {
+      // 自動削除などのステータスコマンドでない場合、「3:ああ」のような繰り返し送信を確認します。
+      const expanded = parseRepeatCommandLines(textarea.value);
+      if (expanded) {
+        // 繰り返しで展開した行にも「str1」のような能力値ダイス変換が効くようにしてから送ります。
+        const statValues = parseStatCommandLines(expanded.join('\n'));
+        if (statValues) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          void executeStatCommand(textarea, statValues);
+          return;
+        }
+        const resValues = parseResCommandLines(expanded.join('\n'));
+        if (resValues) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          void executeResCommand(textarea, resValues);
+          return;
+        }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void executeRepeatCommand(textarea, expanded);
+        return;
+      }
       // 自動削除などのステータスコマンドでない場合、「str1」のような能力値ダイスを確認します。
       const statValues = parseStatCommandLines(textarea.value);
       if (statValues) {
@@ -1371,6 +1442,204 @@
       await fastWait(60);
     }
   }, { forceOpen: true, closeAfter: true });
+
+  /* 行式リスト（マイキャラクター一覧・スクリーンパネル一覧）の共通処理。
+     どちらもシーン表と同じ .MuiDialogContent-root.scrollable-list のダイアログで開き、
+     行（li.MuiListItem-container）の右端にトグルボタンが並びます。トグルボタンの
+     aria-label（ダメならアイコン）で現在状態を判断します:
+     - マイキャラ: 「駒として盤面に追加」(PersonAddIcon)=盤面外、「駒を盤面から削除」(ArchiveIcon)=盤面にいる
+     - パネル: 「パネルを表示」(VisibilityOffIcon)=非表示、「パネルを非表示」(VisibilityIcon)=表示中
+     on（true）は「盤面にいる」または「パネルを表示中」を表します。 */
+  const ROW_LIST_SPECS = {
+    myCharacter: {
+      key: 'myCharacter',
+      dialogLabel: 'マイキャラクター一覧',
+      onCountLabel: '盤面にいる',
+      findButton: () =>
+        [...document.querySelectorAll('button[aria-label="マイキャラクター一覧"]')].filter(visible)[0]
+        ?? [...document.querySelectorAll('svg[data-testid="FaceIcon"]')]
+          .filter(visible)
+          .map((icon) => icon.closest('button'))
+          .find(Boolean),
+      hasRows: (list) =>
+        Boolean(list.querySelector('.MuiListItemText-primary')
+          && list.querySelector('button[aria-label="駒として盤面に追加"], button[aria-label="駒を盤面から削除"]')),
+      buttonOn: '駒を盤面から削除',
+      buttonOff: '駒として盤面に追加',
+      fallbackOnTestIds: ['ArchiveIcon'],
+    },
+    screenPanel: {
+      key: 'screenPanel',
+      dialogLabel: 'スクリーンパネル一覧',
+      onCountLabel: '表示中',
+      findButton: () =>
+        // ラベルは「[GM] スクリーンパネル一覧」のように役割が前に入るので、後方一致で拾います。
+        [...document.querySelectorAll('button[aria-label$="スクリーンパネル一覧"]')].filter(visible)[0]
+        ?? [...document.querySelectorAll('svg[data-testid="LayersIcon"]')]
+          .filter(visible)
+          .map((icon) => icon.closest('button'))
+          .find(Boolean),
+      hasRows: (list) =>
+        Boolean(list.querySelector('.MuiListItemText-primary')
+          && list.querySelector('button[aria-label="パネルを表示"], button[aria-label="パネルを非表示"]')),
+      buttonOn: 'パネルを非表示',
+      buttonOff: 'パネルを表示',
+      fallbackOnTestIds: ['VisibilityIcon'],
+    },
+  };
+
+  const rowListButtonOf = (container) => container.querySelector('.MuiListItemSecondaryAction-root button');
+  // 行の現在状態を返します（true = 盤面にいる / パネルを表示中）。aria-labelと見つのアイコンの両方を見ます。
+  const rowListStateOf = (container, spec) => {
+    const button = rowListButtonOf(container);
+    const label = button?.getAttribute('aria-label') ?? '';
+    if (label === spec.buttonOn) return true;
+    if (label === spec.buttonOff) return false;
+    return Boolean(spec.fallbackOnTestIds.some((testId) => button?.querySelector(`[data-testid="${testId}"]`)));
+  };
+
+  const openRowListDialog = async (spec) => {
+    const button = spec.findButton();
+    if (!button) throw new Error(`CCFOLIAの${spec.dialogLabel}ボタンが見つかりません。`);
+
+    log(`${spec.dialogLabel}ボタン（aria-label="${button.getAttribute('aria-label') ?? 'なし'}"）を押します。`);
+    // ボタンはpointer/mouse込みで押します（シーンボタンと同じpressElement。素のclickでは
+    // 反応しないMUIのコンポーネントがあるため）。
+    pressElement(button);
+    // 外側のラッパはシーン表と違う種類のことがあるので、ダイアログの「中身」で判別します:
+    // 名前（MuiListItemText-primary）と固有のトグルボタンが並ぶscrollable-listを拾います。
+    const findDialog = () => [...document.querySelectorAll('.MuiDialogContent-root.scrollable-list')]
+      .filter(visible)
+      .filter(spec.hasRows)
+      .sort((left, right) => left.querySelectorAll('*').length - right.querySelectorAll('*').length)[0] ?? null;
+    let root = await waitFor(findDialog, 5000);
+    if (!root) {
+      // 最初の押下で開かなかったときは、もう一度だけ押します（1回目のpointerが効かないケースの保険）。
+      log(`${spec.dialogLabel}が開かなかったため、もう一度押します。`);
+      pressElement(button);
+      root = await waitFor(findDialog, 4000);
+    }
+    if (!root) {
+      // 切り分け用に、開いてしまったものと参照できる一覧をコンソールに出します。
+      const openOverlays = [...document.querySelectorAll('[role="dialog"], .MuiDialog-root, .MuiModal-root')].filter(visible).length;
+      const scrollableLists = [...document.querySelectorAll('.MuiDialogContent-root.scrollable-list')]
+        .map((list) => (visible(list) ? '可視' : '非可視'))
+        .join(', ') || 'なし';
+      log(`${spec.dialogLabel}を開けませんでした（開いているダイアログ類: ${openOverlays}個、scrollable-list: ${scrollableLists}）。`);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      throw new Error(`CCFOLIAの${spec.dialogLabel}を開けられませんでした。CCFOLIAの画面で${spec.dialogLabel}のボタンから開けるか確認してください。`);
+    }
+    return root;
+  };
+
+  // シーン表と同じ手順で閉じます: 「閉じる」ボタン→Escape→外側クリックの順で、消えるまで試します。
+  // ダイアログで見えないようにするため、待ちは短め（押下→60ms以降70ms間隔）で詰めます。
+  const closeRowListDialog = async (root) => {
+    const closeButton = findPanelCloseButton(root);
+    if (closeButton) pressElement(closeButton);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await fastWait(attempt === 0 ? 60 : 70);
+      if (!root.isConnected || !visible(root)) {
+        await fastWait(40);
+        return;
+      }
+      if (attempt % 2 === 0) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      else await clickAwayFromMenus();
+    }
+    if (root.isConnected && visible(root)) {
+      for (const button of [...document.querySelectorAll('button[aria-label="閉じる"]')].filter(visible).slice(0, 3)) {
+        pressElement(button);
+        await fastWait(50);
+      }
+      if (root.isConnected && visible(root)) await clickAwayFromMenus();
+    }
+    await fastWait(40);
+  };
+
+  const readRowListEntries = (root, spec) =>
+    scanScrollableList(root, (scrollableList, entries) => {
+      let count = 0;
+      // 同名の行も数え落とさないため行単位で読み取りつつ、外した（スクロールで再読した）行だけ捨てます。
+      for (const container of scrollableList.querySelectorAll('.MuiListItem-container')) {
+        count += 1;
+        const name = normalizedText(container.querySelector('.MuiListItemText-primary'));
+        if (!name) continue;
+        const on = rowListStateOf(container, spec);
+        const secondary = normalizedText(container.querySelector('.MuiListItemText-secondary'));
+        if (!entries.some((entry) => entry.name === name && entry.on === on && entry.secondary === secondary)) {
+          entries.push({ name, on, secondary });
+        }
+      }
+      return count;
+    });
+
+  // 行式リストを開いて最下部まで走査し、名前と現在状態（on）を返します。
+  const openRowListEntries = async (spec) => {
+    log(`${spec.dialogLabel}の取得を開始します。`);
+    const root = await openRowListDialog(spec);
+    try {
+      const entries = await readRowListEntries(root, spec);
+      const onCount = entries.filter((entry) => entry.on).length;
+      log(`${spec.dialogLabel}を${entries.length}件読み取りました（${spec.onCountLabel}のは${onCount}件）。`);
+      return { ok: true, entries };
+    } finally {
+      await closeRowListDialog(root);
+    }
+  };
+
+  // 行式リストの切替: 指定（名前・複数可）の行にあるトグルボタンを順に押します。
+  // 押した時点の状態で「onへ切り替え」「offへ切り替え」が決まります。
+  // 複数件でもダイアログは一度だけ開き、ちらつきを抑えます。戻り値は切替後の状態です。
+  const toggleRowListItems = async (spec, { names } = {}) => {
+    const wanted = (Array.isArray(names) ? names : [names?.name])
+      .map((name) => String(name ?? '').trim())
+      .filter(Boolean);
+    if (!wanted.length) throw new Error('対象の名前がありません。');
+    log(`${spec.dialogLabel}から${wanted.length}件の切替を実行します。`);
+    const root = await openRowListDialog(spec);
+    try {
+      const scrollableList = findPaletteDialogScrollableList(root);
+      if (!scrollableList) throw new Error(`${spec.dialogLabel}のスクロール領域が見つかりません。`);
+      const findRowButton = (name) => [...scrollableList.querySelectorAll('.MuiListItem-container')]
+        .filter((container) => normalizedText(container.querySelector('.MuiListItemText-primary')) === name)
+        .map(rowListButtonOf)
+        .find(Boolean) ?? null;
+      const results = [];
+      for (const name of wanted) {
+        let rowButton = findRowButton(name);
+        if (!rowButton) {
+          // 見えている範囲に無いときは、一覧を最下部までなぞってからもう一度探します。
+          await readRowListEntries(root, spec);
+          rowButton = findRowButton(name);
+        }
+        if (!rowButton) {
+          log(`「${name}」の行が${spec.dialogLabel}に見つかりませんでした。`);
+          continue;
+        }
+        const wasOn = rowListStateOf(rowButton.closest('.MuiListItem-container'), spec);
+        pressElement(rowButton);
+        // 押下の反映（ボタンの入れ替わり）だけは待ちます。ふつうは1描画で済みます。
+        const confirmed = Boolean(await waitFor(() => {
+          const current = findRowButton(name);
+          if (!current?.isConnected) return null;
+          return rowListStateOf(current.closest('.MuiListItem-container'), spec) !== wasOn ? true : null;
+        }, 400));
+        if (!confirmed) log(`「${name}」の切替が反映されたことを確認できませんでした（切替後の状態を予定値で返します）。`);
+        results.push({ name, on: !wasOn });
+      }
+      return { ok: true, results };
+    } finally {
+      await closeRowListDialog(root);
+    }
+  };
+
+  // マイキャラクター一覧: 盤面へのキャラ出し入れ（/vc）。
+  const openMyCharacterList = async () => openRowListEntries(ROW_LIST_SPECS.myCharacter);
+  const toggleMyCharacterPieces = ({ names } = {}) => toggleRowListItems(ROW_LIST_SPECS.myCharacter, { names });
+
+  // スクリーンパネル一覧: パネルの表示・非表示の切り替え（/vp）。
+  const openScreenPanelList = async () => openRowListEntries(ROW_LIST_SPECS.screenPanel);
+  const toggleScreenPanels = ({ names } = {}) => toggleRowListItems(ROW_LIST_SPECS.screenPanel, { names });
   // チャットパレット（ListAltIconのボタン）を開いて、現在のキャラクターの技能一覧を読み、閉じます。
   const openChatPaletteDialog = async () => {
     const icon = [...document.querySelectorAll('svg[data-testid="ListAltIcon"]')].find(visible);
@@ -2129,11 +2398,20 @@
       CCFOLIA_CHAT_DICE_IN_ROOM: clickDiceShortcut,
       CCFOLIA_CHAT_PALETTE_IN_ROOM: openChatPalette,
       CCFOLIA_CHAT_PALETTE_SCAN_ALL_IN_ROOM: scanAllChatPalettes,
+      CCFOLIA_CHAR_PIECES_IN_ROOM: openMyCharacterList,
+      CCFOLIA_CHAR_PIECE_TOGGLE_IN_ROOM: toggleMyCharacterPieces,
+      CCFOLIA_SCREEN_PANELS_IN_ROOM: openScreenPanelList,
+      CCFOLIA_SCREEN_PANEL_TOGGLE_IN_ROOM: toggleScreenPanels,
       CCFOLIA_SCENE_LIST_IN_ROOM: openSceneListPanel,
       CCFOLIA_CLEANUP_UI_IN_ROOM: cleanUpMenus
     };
     const action = actions[message?.type];
-    if (!action) return undefined;
+    if (!action) {
+      // 実装の無い種別は黙って返さず、理由を返します（拡張機能の更新後にページの
+      // 再読み込みが無い等で、古いContent Scriptが動いている場合の切り分け用）。
+      sendResponse({ ok: false, error: `この種別はルーム側のContent Scriptに実装されていません: ${message?.type ?? '不明'}（拡張機能を再読み込みし、CCFOLIAのページも再読み込みしてください）` });
+      return true;
+    }
     Promise.resolve(action(message))
       .then((result) => sendResponse(result))
       .catch((reason) => {

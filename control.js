@@ -1230,7 +1230,11 @@
     }
   };
   const parseRepeatCommand = (text) => {
-    const match = String(text).match(/^(\d+)\s*:\s*([\s\S]*)$/);
+    // IMEで入った全角数字・全角コロンも読めるようにします（「３：ああ」→「3:ああ」）。
+    const normalized = String(text ?? '')
+      .replace(/[０-９]/g, (character) => String.fromCharCode(character.charCodeAt(0) - 0xFEE0))
+      .replace(/：/g, ':');
+    const match = normalized.match(/^\s*(\d+)\s*:\s*([\s\S]*)$/);
     if (!match) return null;
     const count = Number(match[1]);
     if (!Number.isSafeInteger(count) || count < 1 || count > 1000) {
@@ -1240,99 +1244,350 @@
     return { count, text: match[2].trim() };
   };
   const isDiceFormula = (formula) => /^(?:\d+)?[dD]\d+(?:[+-](?:(?:\d+)?[dD]\d+|\d+))*$/.test(formula);
+
+  /* エイリアス本文を「;区切りの文」に分けます。
+     if文の {} の中の ; は文の区切りではないため、{} と () の入れ子をたどって分けます。 */
+  const splitAliasStatements = (source) => {
+    const statements = [];
+    let current = '';
+    let braceDepth = 0;
+    let parenDepth = 0;
+    for (const character of source) {
+      if (character === '(') parenDepth += 1;
+      else if (character === ')') parenDepth = Math.max(0, parenDepth - 1);
+      else if (character === '{') braceDepth += 1;
+      else if (character === '}') {
+        braceDepth = Math.max(0, braceDepth - 1);
+        if (braceDepth === 0) {
+          current += character;
+          continue;
+        }
+      } else if (character === ';' && braceDepth === 0 && parenDepth === 0) {
+        if (current.trim()) statements.push(current.trim());
+        current = '';
+        continue;
+      }
+      current += character;
+    }
+    if (current.trim()) statements.push(current.trim());
+    return statements;
+  };
+
+  // 対応する閉じ位置（開き文字の位置から）を探します。見つからなければ -1。
+  const findMatchingBracket = (source, start, openCharacter, closeCharacter) => {
+    let depth = 0;
+    for (let index = start; index < source.length; index += 1) {
+      const character = source[index];
+      if (character === openCharacter) depth += 1;
+      else if (character === closeCharacter) {
+        depth -= 1;
+        if (depth === 0) return index;
+      }
+    }
+    return -1;
+  };
+
+  /* 「if (条件式) { ... } else { ... }」の形を解析します。if文でなければnull、
+     文法がおかしければErrorを投げます。else に続く「else if (...)」の鎖は、
+     else の中にもう1つのif文（elseSourceがifで始まる）として表します。
+     if（またはelse）の波括弧の直後に文が続くときは、その文を trailing に入れて返します
+     （Cでは if(...){...} の後に「;」なしで文を並べられるため）。 */
+  const parseAliasIf = (statement) => {
+    if (!/^if\b/i.test(statement)) return null;
+    const openParen = statement.indexOf('(');
+    if (openParen < 0) {
+      throw new Error(`if文「${statement}」に条件式がありません。「if (a > 0) { ... }」の形で書いてください。`);
+    }
+    const closeParen = findMatchingBracket(statement, openParen, '(', ')');
+    if (closeParen < 0) throw new Error(`if文「${statement}」の「)」が対応していません。`);
+    const condition = statement.slice(openParen + 1, closeParen).trim();
+    if (!condition) throw new Error(`if文「${statement}」の条件式が空です。`);
+    let rest = statement.slice(closeParen + 1).trim();
+    if (!rest.startsWith('{')) {
+      throw new Error(`if文「${statement}」に「{ 送る内容 }」がありません。空のときは { } とだけ書いてください。`);
+    }
+    const thenClose = findMatchingBracket(rest, 0, '{', '}');
+    if (thenClose < 0) throw new Error(`if文「${statement}」の「}」が対応していません。`);
+    const thenSource = rest.slice(1, thenClose);
+    rest = rest.slice(thenClose + 1).trim();
+    let elseSource = null;
+    let trailing = null;
+    if (rest && /^else\b/i.test(rest)) {
+      const elseBody = rest.replace(/^else\b/i, '').trim();
+      if (/^if\b/i.test(elseBody)) {
+        // else ifの鎖。else の中身として、そのままif文を1つ入れます（trailingはその中で処理）。
+        elseSource = elseBody;
+      } else if (elseBody.startsWith('{')) {
+        const elseClose = findMatchingBracket(elseBody, 0, '{', '}');
+        if (elseClose < 0) throw new Error(`else の「}」が対応していません。`);
+        elseSource = elseBody.slice(1, elseClose);
+        const after = elseBody.slice(elseClose + 1).trim();
+        if (after) {
+          if (/^else\b/i.test(after)) throw new Error(`if文「${statement}」に else が2つあります。`);
+          trailing = after;
+        }
+      } else {
+        throw new Error(`else に「{ 送る内容 }」がありません。空のときは { } とだけ書いてください。`);
+      }
+    } else if (rest) {
+      trailing = rest;
+    }
+    return { condition, thenSource, elseSource, trailing };
+  };
+
+  /* C言語風の条件式を評価します。
+     使えるのは !、単項の-、( )、* / %、+ -、> >= < <=、== !=、&&、|| と、
+     数値リテラル・エイリアス変数（int a = 1d8; で作るもの。文中では a と名前だけで書きます）。
+     真偽はCと同じ「0以外が真」です。変数が未決（未定義・ロール待ち）ならErrorを投げます。 */
+  const evaluateAliasCondition = (source, aliasContext) => {
+    const tokenPattern = /\s*(>=|<=|==|!=|&&|\|\||[-+*/%()!<>]|[A-Za-z_]\w*|\d+(?:\.\d+)?)/y;
+    const tokens = [];
+    let position = 0;
+    while (position < source.length) {
+      tokenPattern.lastIndex = position;
+      const match = tokenPattern.exec(source);
+      if (!match) throw new Error(`ifの条件式「${source.trim()}」を読み取れません（使えるのは数値・変数名・演算子です）。`);
+      tokens.push(match[1]);
+      position = tokenPattern.lastIndex;
+    }
+    if (!tokens.length) throw new Error('ifの条件式が空です。');
+    let index = 0;
+    const peek = () => tokens[index];
+    const next = () => {
+      const token = tokens[index];
+      index += 1;
+      return token;
+    };
+    const evaluatePrimary = () => {
+      const token = tokens[index];
+      if (token === undefined) throw new Error('ifの条件式が途中で終わっています。');
+      if (token === '(') {
+        index += 1;
+        const value = evaluateOr();
+        if (peek() !== ')') throw new Error(`ifの条件式「${source.trim()}」の「)」が対応していません。`);
+        index += 1;
+        return value;
+      }
+      if (token === '-') {
+        index += 1;
+        return -evaluatePrimary();
+      }
+      if (token === '+') {
+        index += 1;
+        return evaluatePrimary();
+      }
+      if (token === '!') {
+        index += 1;
+        return evaluatePrimary() === 0 ? 1 : 0;
+      }
+      if (/^\d/.test(token)) {
+        index += 1;
+        return Number(token);
+      }
+      if (/^[A-Za-z_]/.test(token)) {
+        index += 1;
+        if (!Object.prototype.hasOwnProperty.call(aliasContext.variables, token)
+          || typeof aliasContext.variables[token] !== 'number') {
+          throw new Error(`変数「${token}」がまだ決まっていないため、ifの条件式を評価できませんでした（未定義・ロール失敗）。先に「int ${token} = 1d8;」と書くか、送り直してください。`);
+        }
+        return aliasContext.variables[token];
+      }
+      throw new Error(`ifの条件式で「${token}」を読み取れません。数値・変数名・演算子だけが使えます。`);
+    };
+    // 二項演算子を1つ適用します（Cと同じ意味。比較・論理も数値1/0で返します）。
+    const applyBinaryOperator = (operator, left, right) => {
+      if (operator === '*') return left * right;
+      if (operator === '/') return left / right;
+      if (operator === '%') return left % right;
+      if (operator === '+') return left + right;
+      if (operator === '-') return left - right;
+      if (operator === '>') return Number(left > right);
+      if (operator === '<') return Number(left < right);
+      if (operator === '>=') return Number(left >= right);
+      if (operator === '<=') return Number(left <= right);
+      if (operator === '==') return Number(left === right);
+      if (operator === '!=') return Number(left !== right);
+      if (operator === '&&') return Number(left !== 0 && right !== 0);
+      return Number(left !== 0 || right !== 0); // ||
+    };
+    const evaluateBinary = (nextLevel, operators) => {
+      let value = nextLevel();
+      while (operators.includes(peek())) {
+        const operator = next();
+        value = applyBinaryOperator(operator, value, nextLevel());
+      }
+      return value;
+    };
+    // 優先順位の低い層から順に呼びます（Cと同じ: || < && < == != < < > <= >= < + - < * / %）。
+    const evaluateMultiplicative = () => evaluateBinary(evaluatePrimary, ['*', '/', '%']);
+    const evaluateAdditive = () => evaluateBinary(evaluateMultiplicative, ['+', '-']);
+    const evaluateRelational = () => evaluateBinary(evaluateAdditive, ['>=', '<=', '>', '<']);
+    const evaluateEquality = () => evaluateBinary(evaluateRelational, ['==', '!=']);
+    const evaluateAnd = () => evaluateBinary(evaluateEquality, ['&&']);
+    const evaluateOr = () => evaluateBinary(evaluateAnd, ['||']);
+    const result = evaluateOr();
+    if (index < tokens.length) {
+      throw new Error(`ifの条件式「${source.trim()}」に使えない要素が混ざっています。`);
+    }
+    return result !== 0;
+  };
+  /* エイリアス本文（if文・変数定義・/s・/t /c /a・n:文面・#delay・送文）を、
+     送信キューに入れるメッセージの並びへ組み立てます。if文はここでは評価せず、
+     分岐の中身を先に組み立てたaliasIfメッセージとして並べ、送信時に評価して
+     当てはまる側をキューの先頭へ差し込めます。文法エラーは error に入れて返します。 */
+  const compileAliasStatements = (source, { aliasContext, depth }) => {
+    const messages = [];
+    let delayBeforeNext = 0;
+    let hasPendingDelay = false;
+    // 文を1つ処理します（if文の波括弧の後に文が続くときは、その文をtrailingとして
+    // 再帰的に処理します）。エラーのときはメッセージ文字列を返します。
+    const processStatement = (statement) => {
+      if (/^#delay\b/i.test(statement)) {
+        const match = statement.match(/^#delay\s+(\d+(?:\.\d+)?|\.\d+)$/i);
+        const seconds = match ? Number(match[1]) : NaN;
+        if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
+          return '遅延指定は「#delay 0.8」の形式で、0〜86400秒を指定してください。';
+        }
+        delayBeforeNext = seconds * 1000;
+        hasPendingDelay = true;
+        return null;
+      }
+      if (/^int\b/i.test(statement)) {
+        const declaration = statement.match(/^int\s+([A-Za-z_]\w*)\s*=\s*(.+)$/i);
+        if (!declaration) {
+          return `変数定義「${statement}」を読み取れません。例: int a = 1d8;`;
+        }
+        const [, variableName, formula] = declaration;
+        if (!isDiceFormula(formula.trim())) {
+          return `変数「${variableName}」にはダイス式を指定してください（例: int ${variableName} = 1d8;）。`;
+        }
+        const message = {
+          rollFormula: formula.trim(),
+          variableName,
+          aliasContext,
+          historyText: statement
+        };
+        if (delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
+        messages.push(message);
+        delayBeforeNext = 0;
+        hasPendingDelay = false;
+        return null;
+      }
+      // if構文（C言語風の条件式）。文法エラーはエイリアスの実行を中断します。
+      let parsedIf = null;
+      try {
+        parsedIf = parseAliasIf(statement);
+      } catch (reason) {
+        return reason.message;
+      }
+      if (parsedIf) {
+        const thenCompiled = compileAliasStatements(parsedIf.thenSource, { aliasContext, depth });
+        if (thenCompiled.error) return thenCompiled.error;
+        const elseCompiled = parsedIf.elseSource === null
+          ? { messages: [] }
+          : compileAliasStatements(parsedIf.elseSource, { aliasContext, depth });
+        if (elseCompiled.error) return elseCompiled.error;
+        // 分岐の中身末尾に「#delay」だけ置き去りの場合も文法エラーにします。
+        if (thenCompiled.hasPendingDelay || elseCompiled.hasPendingDelay) {
+          return '遅延指定の後に送信する内容を入力してください。';
+        }
+        const message = {
+          aliasIf: {
+            condition: parsedIf.condition,
+            thenMessages: thenCompiled.messages,
+            elseMessages: elseCompiled.messages,
+            aliasContext
+          },
+          aliasContext,
+          historyText: statement
+        };
+        if (delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
+        messages.push(message);
+        delayBeforeNext = 0;
+        hasPendingDelay = false;
+        // if文の波括弧の直後に文が続くときは、その文も続けて処理します（Cと同じく「;」なしで文を並べられます）。
+        if (parsedIf.trailing) return processStatement(parsedIf.trailing);
+        return null;
+      }
+      const sceneCommand = statement.match(/^\/s(\d+)$/i);
+      if (sceneCommand && !/^\/scene(?:\s|$)/i.test(statement)) {
+        const message = { sceneQuery: sceneCommand[1], aliasContext };
+        if (delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
+        messages.push(message);
+      } else {
+        const aliasCommand = statement.match(/^\/([cta])(?:\s+(.*)|([^\s].*))?$/i);
+        if (aliasCommand) {
+          const message = {
+            aliasCommand: aliasCommand[1].toLowerCase(),
+            commandQuery: (aliasCommand[2] ?? aliasCommand[3] ?? '').trim(),
+            compactCommand: Boolean(aliasCommand[3]),
+            commandText: statement,
+            aliasContext,
+            aliasDepth: depth
+          };
+          if (delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
+          messages.push(message);
+          delayBeforeNext = 0;
+          hasPendingDelay = false;
+          return null;
+        }
+        const repeated = parseRepeatCommand(statement);
+        if (repeated?.error) {
+          return repeated.error;
+        }
+        if (repeated) {
+          for (let repeatIndex = 0; repeatIndex < repeated.count; repeatIndex += 1) {
+            const message = {
+              text: repeated.text,
+              historyText: statement,
+              aliasContext
+            };
+            if (repeatIndex === 0 && delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
+            messages.push(message);
+          }
+        } else {
+          const message = { text: statement, aliasContext };
+          if (delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
+          messages.push(message);
+        }
+      }
+      delayBeforeNext = 0;
+      hasPendingDelay = false;
+      return null;
+    };
+    for (const statement of splitAliasStatements(source)) {
+      const error = processStatement(statement);
+      if (error) return { error };
+    }
+    return { messages, hasPendingDelay };
+  };
+
   const runAliasEntry = (index, { front = false, depth = 0, nested = false } = {}) => {
     const entry = aliasEntries[index];
     if (!entry) return;
+    if (entry.text.trim() === '/') {
+      chatInput.value = '/';
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      focusChatInput();
+      return;
+    }
     // 更新中などで送信できないときは、内容だけいったん入力欄に残します（押し直せば送られます）。
     if (sendButton.disabled && !nested) {
       chatInput.value = entry.text;
       chatInput.dispatchEvent(new Event('input', { bubbles: true }));
       return;
     }
-    const messages = [];
     const aliasContext = { variables: Object.create(null), failedVariables: new Set() };
-    let delayBeforeNext = 0;
-    let hasPendingDelay = false;
-    for (const segment of entry.text.split(';')) {
-      const line = segment.trim();
-      if (!line) continue;
-      if (/^#delay\b/i.test(line)) {
-        const match = line.match(/^#delay\s+(\d+(?:\.\d+)?|\.\d+)$/i);
-        const seconds = match ? Number(match[1]) : NaN;
-        if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
-          aliasStatus.textContent = '遅延指定は「#delay 0.8」の形式で、0〜86400秒を指定してください。';
-          return;
-        }
-        delayBeforeNext = seconds * 1000;
-        hasPendingDelay = true;
-        continue;
-      }
-      if (/^int\b/i.test(line)) {
-        const declaration = line.match(/^int\s+([A-Za-z_]\w*)\s*=\s*(.+)$/i);
-        if (!declaration) {
-          aliasStatus.textContent = `変数定義「${line}」を読み取れません。例: int a = 1d8;`;
-          return;
-        }
-        const [, variableName, formula] = declaration;
-        if (!isDiceFormula(formula.trim())) {
-          aliasStatus.textContent = `変数「${variableName}」にはダイス式を指定してください（例: int ${variableName} = 1d8;）。`;
-          return;
-        }
-        messages.push({
-          rollFormula: formula.trim(),
-          variableName,
-          aliasContext,
-          historyText: line,
-          delayBefore: delayBeforeNext
-        });
-        delayBeforeNext = 0;
-        hasPendingDelay = false;
-        continue;
-      }
-      const sceneCommand = line.match(/^\/s(\d+)$/i);
-      if (sceneCommand && sceneCommand[1].trim() && !/^\/scene(?:\s|$)/i.test(line)) {
-        messages.push({ sceneQuery: sceneCommand[1].trim(), aliasContext, delayBefore: delayBeforeNext });
-      } else {
-        const aliasCommand = line.match(/^\/([cta])(?:\s+(.*)|([^\s].*))?$/i);
-        if (aliasCommand) {
-          messages.push({
-            aliasCommand: aliasCommand[1].toLowerCase(),
-            commandQuery: (aliasCommand[2] ?? aliasCommand[3] ?? '').trim(),
-            compactCommand: Boolean(aliasCommand[3]),
-            commandText: line,
-            aliasContext,
-            aliasDepth: depth,
-            delayBefore: delayBeforeNext
-          });
-          delayBeforeNext = 0;
-          hasPendingDelay = false;
-          continue;
-        }
-        const repeated = parseRepeatCommand(line);
-        if (repeated?.error) {
-          aliasStatus.textContent = repeated.error;
-          return;
-        }
-        if (repeated) {
-          for (let repeatIndex = 0; repeatIndex < repeated.count; repeatIndex += 1) {
-            messages.push({
-              text: repeated.text,
-              historyText: line,
-              aliasContext,
-              delayBefore: repeatIndex === 0 ? delayBeforeNext : 0
-            });
-          }
-        } else {
-          messages.push({ text: line, aliasContext, delayBefore: delayBeforeNext });
-        }
-      }
-      delayBeforeNext = 0;
-      hasPendingDelay = false;
+    const compiled = compileAliasStatements(entry.text, { aliasContext, depth });
+    if (compiled.error) {
+      aliasStatus.textContent = compiled.error;
+      return;
     }
-    if (hasPendingDelay) {
+    if (compiled.hasPendingDelay) {
       aliasStatus.textContent = '遅延指定の後に送信する内容を入力してください。';
       return;
     }
+    const messages = compiled.messages;
     if (!messages.length) return;
     hideCommandSuggestions();
     setAliasExecutionStatus(`エイリアス「${entry.name}」を実行しています。`);
@@ -1549,10 +1804,12 @@
 
   /* /t /g /n /c /s /a /grep /l コマンド。fzf風のTab補完で選択します。 */
   const commandSuggestions = document.getElementById('command-suggestions');
-  let commandMode = null; // 'commands' | 'm'(=/t チャットタブ) | 'grep' | 'g' | 'n' | 'c' | 's' | 'a' | 'reload'
+  let commandMode = null; // 'commands' | 'm'(=/t チャットタブ) | 'grep' | 'g' | 'n' | 'c' | 's' | 'a' | 'v'(=/vc) | 'w'(=/vp) | 'reload'
   let commandMatches = [];
   let commandIndex = 0;
   let commandQuery = null;
+  // 行式リスト（/vc・/vp）の変更予約（クリック・Ctrl+Enterで対象を選び、「変更」でまとめて実行します）。
+  let commandSelections = [];
   const commandDefinitions = [
     { command: '/t', description: 'タブ切り替え' },
     { command: '/g', description: '技能選択' },
@@ -1561,8 +1818,55 @@
     { command: '/grep', description: 'ログ検索' },
     { command: '/c', description: 'キャラクター切り替え' },
     { command: '/s', description: 'シーン切り替え' },
+    { command: '/vc', description: '盤面のキャラ出し入れ' },
+    { command: '/vp', description: 'スクリーンパネルの表示切替' },
     { command: '/l', description: '一括更新' }
   ];
+  // 行式リストコマンド（/vc=マイキャラクター、/vp=スクリーンパネル）の共通仕様。
+  // 候補データ・CCFOLIA側への要求・表示の文言だけが違い、fzf風の操作は共通です。
+  const ROW_COMMAND_MODES = {
+    v: {
+      key: 'v',
+      fetchLabel: 'マイキャラクター一覧',
+      badge: '盤面',
+      unit: '人',
+      summaryOn: '追加',
+      summaryOff: '外した',
+      // 変更予約チップの言葉（現在がonならswitchOff、offならswitchOnを出します）。
+      switchOn: '→追加',
+      switchOff: '→外す',
+      restart: 'マイキャラクター一覧を取得しています…',
+      offWord: '押すと「変更」で盤面に追加します',
+      onWord: '押すと「変更」で盤面から外します',
+      isOn: (candidate) => candidate.onBoard === true,
+      patch: (name, on) => {
+        pieceCharacterEntries = pieceCharacterEntries.map((character) =>
+          character.name === name ? { ...character, onBoard: on === true } : character);
+      },
+      fetchType: 'CCFOLIA_CHAR_PIECES',
+      toggleType: 'CCFOLIA_CHAR_PIECE_TOGGLE',
+    },
+    w: {
+      key: 'w',
+      fetchLabel: 'スクリーンパネル一覧',
+      badge: '表示中',
+      unit: '枚',
+      summaryOn: '表示',
+      summaryOff: '非表示にした',
+      switchOn: '→表示',
+      switchOff: '→非表示',
+      restart: 'スクリーンパネル一覧を取得しています…',
+      offWord: '押すと「変更」で表示します',
+      onWord: '押すと「変更」で非表示にします',
+      isOn: (candidate) => candidate.shown === true,
+      patch: (name, on) => {
+        screenPanelEntries = screenPanelEntries.map((panel) =>
+          panel.name === name ? { ...panel, shown: on === true } : panel);
+      },
+      fetchType: 'CCFOLIA_SCREEN_PANELS',
+      toggleType: 'CCFOLIA_SCREEN_PANEL_TOGGLE',
+    },
+  };
   // 「/」でコマンド一覧を表示します。
   // ただし、本家の「/scene シーン名」コマンドを手入力したときはセレクタに奪わず、そのまま送信させます。
   const parseCommandInput = (value) => {
@@ -1571,6 +1875,11 @@
     // /grep は「g」の前に判定します（/g… の文字ルールで奪われないように）。/gr でも同じ動作にします。
     const grep = value.match(/^\/(?:grep|gr)(?:\s+(.*))?$/i);
     if (grep) return { mode: 'grep', query: grep[1] ?? '' };
+    // /vc・/vp は2文字のコマンドなので、1文字の判定の前に拾います（/v に 'c' を絞り込み語と誤解させない）。
+    const piece = value.match(/^\/vc(?:\s+(.*))?$/i);
+    if (piece) return { mode: 'v', query: piece[1] ?? '' };
+    const screenPanel = value.match(/^\/vp(?:\s+(.*))?$/i);
+    if (screenPanel) return { mode: 'w', query: screenPanel[1] ?? '' };
     const match = value.match(/^\/([amtgncs])(.*)$/);
     if (!match) return null;
     if (match[1] === 's' && value.toLowerCase().startsWith('/scene')) return null;
@@ -1604,6 +1913,12 @@
       // aliasは名前で選択すると内容を入力欄へ入れます。
       return aliasEntries.map((entry, index) => ({ label: entry.name, aliasIndex: index }));
     }
+    if (mode === 'v') {
+      return pieceCharacterEntries.map((character) => ({ label: character.name, name: character.name, onBoard: character.onBoard }));
+    }
+    if (mode === 'w') {
+      return screenPanelEntries.map((panel) => ({ label: panel.name, name: panel.name, shown: panel.shown, detail: panel.detail ?? '' }));
+    }
     return (latestChatState?.characters ?? [])
       .map((character) => ({
         label: character.name || `キャラクター${character.index + 1}`,
@@ -1625,6 +1940,8 @@
     if (mode === 'n') return '一致する能力値がありません。STR、CON、POW、DEX、APP、SIZ、INT、EDUから選べます。';
     if (mode === 's') return 'シーン候補がありません。入力欄が空の状態から取得するか、「一括取得」で取得してください。';
     if (mode === 'a') return 'aliasがありません。「設定・キャラクター情報」でaliasを登録してください。';
+    if (mode === 'v') return '一致するキャラクターがありません。マイキャラクター一覧から取得してください。';
+    if (mode === 'w') return '一致するスクリーンパネルがありません。スクリーンパネル一覧から取得してください。';
     return 'キャラクター候補がありません。「更新」で候補を取得してください。';
   };
 
@@ -1637,6 +1954,7 @@
     commandIndex = 0;
     commandQuery = null;
     commandMode = null;
+    commandSelections = [];
   };
 
   // 表示した場合はtrue、コマンド以外の入力ならfalseを返します（技能候補との居住分け用）。
@@ -1658,6 +1976,8 @@
     // モード・絞り込み語が変わったらハイライトを初期位置へ戻します。
     // シーン(/s)は初期位置を「現在のシーン」に合わせ、それ以外は先頭に当てます。
     let resetHighlight = parsed.mode !== commandMode || parsed.query !== commandQuery;
+    // /vc・/vp の選択はモードごとに独立させるため、モードが変わったら空にします。
+    if (parsed.mode !== commandMode) commandSelections = [];
     commandMode = parsed.mode;
     commandQuery = parsed.query;
     // 絞り込みはスペース区切りの複数語のAND一致（fzf風）です。
@@ -1699,20 +2019,75 @@
         button.type = 'button';
         button.className = 'skill-suggestion-item';
         button.classList.toggle('is-highlighted', index === commandIndex);
+        // テキストは先に入れます（textContentへの代入は子要素を消してしまうため）、
+        // そのあとで行式リスト用の現在状態バッジと切替ボタンチップを整えます。
         button.textContent = candidate.label;
-        button.title = candidate.title ?? candidate.label;
+        const rowSpec = ROW_COMMAND_MODES[commandMode];
+        if (rowSpec) {
+          const isOn = rowSpec.isOn(candidate);
+          const marked = commandSelections.find((item) => item.name === candidate.name);
+          button.classList.toggle('is-on', isOn);
+          button.classList.toggle('is-selected', Boolean(marked));
+          // 現在の状態（盤面／表示中）。
+          const badge = document.createElement('span');
+          badge.className = 'row-state-badge';
+          badge.textContent = rowSpec.badge;
+          badge.setAttribute('aria-hidden', 'true');
+          button.append(badge);
+          // 切替ボタン。行を押すたび「変更でこうなる」の予約の付け外しになります。
+          const switchChip = document.createElement('span');
+          switchChip.className = 'row-switch-badge';
+          switchChip.textContent = isOn ? rowSpec.switchOff : rowSpec.switchOn;
+          switchChip.setAttribute('aria-hidden', 'true');
+          button.append(switchChip);
+          const detail = candidate.detail ? `（${candidate.detail}）` : '';
+          button.title = `${candidate.label}${detail}：${isOn ? rowSpec.onWord : rowSpec.offWord}`;
+        }
+        if (!rowSpec) button.title = candidate.title ?? candidate.label;
         button.addEventListener('click', () => {
           commandIndex = index;
+          // 行式リスト（/vc・/vp）ではクリックで切替を予約し、「変更」でまとめて実行します。
+          if (ROW_COMMAND_MODES[commandMode]) {
+            toggleCommandMultiSelect();
+            return;
+          }
           void executeCommand();
         });
         commandSuggestions.append(button);
       });
+      // 行式リストのときは候補の下に、予約した件数と「変更」ボタンのバーを出します。
+      if (ROW_COMMAND_MODES[commandMode]) {
+        const footer = document.createElement('div');
+        footer.className = 'command-suggestions-footer';
+        const summary = document.createElement('span');
+        summary.textContent = commandSelections.length
+          ? `${commandSelections.length}${ROW_COMMAND_MODES[commandMode].unit}を変更予定`
+          : '各行の切替ボタンで変更を予約できます';
+        const runButton = document.createElement('button');
+        runButton.type = 'button';
+        runButton.className = 'command-suggestions-run';
+        runButton.textContent = commandSelections.length ? `変更（${commandSelections.length}件）` : '変更';
+        runButton.disabled = !commandSelections.length;
+        runButton.addEventListener('click', async () => {
+          const names = commandSelections.map((item) => item.name);
+          if (!names.length) return;
+          await runRowToggles(commandMode, names);
+        });
+        footer.append(summary, runButton);
+        commandSuggestions.append(footer);
+      }
     }
     commandSuggestions.hidden = false;
     // 選択中の行が候補の多いリスト内の画面外にあると、Tabや上下キーで移動しても
     // 何を選んでいるのか分からなくなるため、ハイライトを見える位置へ送ります。
     const highlighted = commandSuggestions.querySelector('.skill-suggestion-item.is-highlighted');
     if (highlighted) highlighted.scrollIntoView({ block: 'nearest' });
+    // 行式リスト（/vc・/vp）の予約中は、件数と確定方法を出します。
+    if (ROW_COMMAND_MODES[commandMode]) {
+      chatStatus.textContent = commandSelections.length
+        ? `${commandSelections.length}${ROW_COMMAND_MODES[commandMode].unit}を変更予定。「変更」ボタン（またはEnter）でまとめて切り替えます（行クリック・Ctrl+Enterで予約の追加・解除、Escで予約をクリア）`
+        : '';
+    }
     // 技能候補はコマンド入力中は表示しません。
     hideSkillSuggestions();
     return true;
@@ -1726,6 +2101,55 @@
     if (commandIndex < 0) commandIndex = 0;
     else commandIndex = ((commandIndex + direction) % count + count) % count;
     renderCommandSuggestions();
+  };
+
+  // 行式リスト（/vc・/vp）の変更予約（クリック・Ctrl+Enter）。ハイライト中の候補を
+  // 「変更で切り替える対象」に加えたり外したりします。ハイライトは動かさず、その場で付け外しします。
+  const toggleCommandMultiSelect = () => {
+    if (!ROW_COMMAND_MODES[commandMode]) return;
+    const candidate = commandMatches[commandIndex];
+    if (!candidate) return;
+    if (commandSelections.some((item) => item.name === candidate.name)) {
+      commandSelections = commandSelections.filter((item) => item.name !== candidate.name);
+    } else {
+      // 予約時点の候補の状態の逆を「変更後の状態」として覚えておきます（表示向け。実行はCCFOLIA側の現在値で切り替わります）。
+      commandSelections = [...commandSelections, { name: candidate.name, on: !rowSpecIsOn(commandMode, candidate) }];
+    }
+    renderCommandSuggestions();
+  };
+  // 候補の現在状態（盤面にいる／パネル表示中）をモード仕様から取ります。
+  const rowSpecIsOn = (mode, candidate) => {
+    const rowSpec = ROW_COMMAND_MODES[mode];
+    return rowSpec ? rowSpec.isOn(candidate) : false;
+  };
+
+  // 行式リスト（/vc・/vp）の確定（「変更」ボタン・Enter）。予約した行をまとめて切り替えます。
+  // 複数件でもルーム側ではダイアログを一度だけ開いて順に押すので、画面がほとんどちらつきません。
+  const runRowToggles = async (mode, names) => {
+    const rowSpec = ROW_COMMAND_MODES[mode];
+    if (!rowSpec) return;
+    hideCommandSuggestions();
+    chatInput.value = '';
+    chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    try {
+      chatStatus.textContent = `${rowSpec.fetchLabel}の切り替えを実行しています…（${names.length}${rowSpec.unit}）`;
+      const result = await sendRequest(rowSpec.toggleType, { names });
+      const outcomes = result?.results ?? [];
+      // 切替後の状態をローカルの候補にも反映します（次に一覧を取り直すまでの簡易更新）。
+      for (const outcome of outcomes) {
+        rowSpec.patch(outcome?.name, outcome?.on === true);
+      }
+      const turnedOn = outcomes.filter((outcome) => outcome?.on === true).length;
+      const turnedOff = outcomes.length - turnedOn;
+      const missing = names.length - outcomes.length;
+      const summary = [`${rowSpec.summaryOn}${turnedOn}${rowSpec.unit}`, `${rowSpec.summaryOff}${turnedOff}${rowSpec.unit}`];
+      if (missing > 0) summary.push(`見つからなかった${missing}${rowSpec.unit}`);
+      chatStatus.textContent = `${rowSpec.fetchLabel}の切り替えをしました。${summary.join('、')}。`;
+    } catch (reason) {
+      chatStatus.textContent = reason.message;
+    } finally {
+      chatInput.focus();
+    }
   };
 
   const executeCommand = async () => {
@@ -1778,6 +2202,21 @@
       }
       return;
     }
+    // 行式リスト（/vc・/vp）は、初回Enterで候補が無い場合に、その場でCCFOLIA側の一覧を
+    // 開いて取得してから候補を表示します（自動では動かさないので、候補が見えたらもう一度Enterします）。
+    if (ROW_COMMAND_MODES[commandMode] && !rowEntriesOf(commandMode).length) {
+      try {
+        await ensureRowEntries(commandMode);
+        // ハイライトは「off」（盤面にいない／パネル非表示）の最初の行から始めます。
+        const rowSpec = ROW_COMMAND_MODES[commandMode];
+        const index = commandCandidates(commandMode).findIndex((candidate) => !rowSpec.isOn(candidate));
+        commandIndex = Math.max(0, index);
+        renderCommandSuggestions();
+      } catch (reason) {
+        chatStatus.textContent = reason.message;
+      }
+      return;
+    }
     if (!count || commandIndex < 0 || commandIndex >= count) {
       chatStatus.textContent = commandEmptyMessage(commandMode ?? 'm');
       chatInput.value = '';
@@ -1799,6 +2238,15 @@
       chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length;
       chatInput.dispatchEvent(new Event('input', { bubbles: true }));
       chatInput.focus();
+      return;
+    }
+    if (ROW_COMMAND_MODES[commandMode]) {
+      // 「変更」の確定。予約が無いときは、ハイライト中の1行を予約の対象に入れて待ちます。
+      if (!commandSelections.length) {
+        toggleCommandMultiSelect();
+        return;
+      }
+      await runRowToggles(commandMode, commandSelections.map((item) => item.name));
       return;
     }
     if (commandMode === 's') {
@@ -2026,6 +2474,7 @@
       let paletteCount = null;
       let paletteCharacters = null;
       let sceneCount = null;
+      let pieceCount = null;
       if (force) {
         // 再走査: 「キャラクター選択」メニューで選べるキャラを順に選び、選ぶたびに
         // チャットパレット（ListAltIconのボタン）を開いて読み込みます。
@@ -2096,6 +2545,27 @@
           chatStatus.textContent = `シーン一覧: ${reason.message}（前のセッションの残りを空欄にしました）`;
         }
       }
+      // マイキャラクター一覧（/vc 用）とスクリーンパネル一覧（/vp 用）も取り直します。
+      // 「盤面にいるか / 表示中か」は今この時点のスナップショットのため、失敗したら前の残りを空欄へ戻します。
+      let panelCount = null;
+      try {
+        status.textContent = 'マイキャラクター一覧を取得しています…';
+        pieceCount = (await requestTimeout(fetchRowEntries('v'), 180, 'マイキャラクター一覧の取得')).length;
+      } catch (reason) {
+        console.error('[CCFOLIA ステータス変更]', reason);
+        pieceCharacterEntries = [];
+        pieceCount = null;
+        chatStatus.textContent = `マイキャラクター一覧: ${reason.message}`;
+      }
+      try {
+        status.textContent = 'スクリーンパネル一覧を取得しています…';
+        panelCount = (await requestTimeout(fetchRowEntries('w'), 180, 'スクリーンパネル一覧の取得')).length;
+      } catch (reason) {
+        console.error('[CCFOLIA ステータス変更]', reason);
+        screenPanelEntries = [];
+        panelCount = null;
+        chatStatus.textContent = `スクリーンパネル一覧: ${reason.message}`;
+      }
       // 取得のためにCCFOLIA側で開いたシーン表・チャットパレット・メニューを閉じておきます。
       try {
         await requestTimeout(sendRequest('CCFOLIA_CLEANUP_UI'), 60, '画面の後片付け');
@@ -2108,7 +2578,7 @@
       const paletteText = paletteCount !== null
         ? `、パレット${paletteCharacters && paletteCharacters > 0 ? `${paletteCharacters}キャラ分` : ''}${paletteCount}件`
         : '';
-      status.textContent = `${force ? '再走査しました' : '更新しました'}（キャラクター${characterCount}人${paletteText}${sceneCount !== null ? `、シーン${sceneCount}件` : ''}）。`;
+      status.textContent = `${force ? '再走査しました' : '更新しました'}（キャラクター${characterCount}人${paletteText}${sceneCount !== null ? `、シーン${sceneCount}件` : ''}${pieceCount !== null ? `、マイキャラ${pieceCount}人` : ''}${panelCount !== null ? `、表示パネル${panelCount}枚` : ''}）。`;
     } catch (reason) {
       console.error('[CCFOLIA ステータス変更]', reason);
       status.textContent = reason instanceof Error ? reason.message : String(reason);
@@ -2186,6 +2656,44 @@
     }
     chatStatus.textContent = '';
     return sceneEntries;
+  };
+
+  // /vc（盤面のキャラ出し入れ）・/vp（スクリーンパネル表示切替）の候補。
+  // いずれもCCFOLIA側の一覧を読み取るため、取得のたびにCCFOLIA側を開く必要があります
+  // （保存せず、そのセッションだけの覚え書きにします）。
+  let pieceCharacterEntries = [];
+  let screenPanelEntries = [];
+  // モードごとの現在の候補一覧を返します（patch以外の参照用。TDZ対策で関数経由にします）。
+  const rowEntriesOf = (mode) => (mode === 'v' ? pieceCharacterEntries : screenPanelEntries);
+  // 一覧をCCFOLIA側から取り直します。content.jsの応答（entries: {name, on, secondary}）を
+  // モードごとの候補の形へ整えます（onBoard / shown、detail=二次テキスト）。
+  const fetchRowEntries = async (mode) => {
+    const rowSpec = ROW_COMMAND_MODES[mode];
+    const result = await sendRequest(rowSpec.fetchType);
+    const entries = (result?.entries ?? []).map((entry) => ({
+      name: entry?.name ?? '',
+      detail: entry?.secondary ?? '',
+      ...(mode === 'v' ? { onBoard: entry?.on === true } : { shown: entry?.on === true }),
+    }));
+    if (mode === 'v') pieceCharacterEntries = entries;
+    else screenPanelEntries = entries;
+    return entries;
+  };
+  // 行式リストのコマンドで候補が出ないときに、最初の1回だけ自動で取得します。
+  const ensureRowEntries = async (mode) => {
+    const rowSpec = ROW_COMMAND_MODES[mode];
+    if (!rowSpec) return [];
+    if (rowEntriesOf(mode).length) return rowEntriesOf(mode);
+    chatStatus.textContent = rowSpec.restart;
+    // 一覧の取得はCCFOLIA本体側のダイアログを操作するので、オーバーレイを一時的に隠します。
+    await pauseChatOverlay();
+    try {
+      await fetchRowEntries(mode);
+    } finally {
+      await resumeChatOverlay();
+    }
+    chatStatus.textContent = '';
+    return rowEntriesOf(mode);
   };
 
   // 保存済みの一覧に関係なく、CCFOLIA側を走査し直して更新します。
@@ -2298,6 +2806,28 @@
       while (pendingMessages.length) {
         const message = pendingMessages.shift();
         try {
+          // if構文: 条件式を評価して、当てはまる側の文をキューの先頭へ差し込みます。
+          // 変数の値はダイスロールの結果次第なので、評価はキューがこの地点に来たときに行います。
+          if (message.aliasIf) {
+            let chosenMessages = null;
+            try {
+              chosenMessages = evaluateAliasCondition(message.aliasIf.condition, message.aliasIf.aliasContext)
+                ? message.aliasIf.thenMessages
+                : message.aliasIf.elseMessages;
+            } catch (reason) {
+              // 条件が評価できない（未定義変数など）ときは、if全体を読み飛ばして続行します。
+              chatStatus.textContent = reason.message;
+            }
+            if (chosenMessages?.length) {
+              // if自体に入っていた待ち時間（#delay）は、差し込んだ最初の文に引き継ぎます。
+              pendingMessages.unshift(...chosenMessages.map((child, childIndex) => (
+                childIndex === 0
+                  ? { ...child, delayBefore: (child.delayBefore ?? 0) + (message.delayBefore ?? 0) }
+                  : { ...child }
+              )));
+            }
+            continue;
+          }
           if (message.delayBefore > 0) {
             await new Promise((resolve) => window.setTimeout(resolve, message.delayBefore));
           }
@@ -2441,6 +2971,24 @@
   chatInput.addEventListener('input', () => {
     if (!renderCommandSuggestions()) showSkillSuggestions(chatInput.value);
   });
+  // 入力欄が空のとき、←で「/」を自動入力してコマンド候補を出せます。
+  // →は入力欄の中身を空にします（どんな状態でも発動。誤って入れた文もすぐ消せます）。
+  // IME変換中・Ctrl/Alt/Cmd修飾付きでは発動しません（通常のコマンド操作を優先します）。
+  chatInput.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === 'ArrowLeft' && chatInput.value === '') {
+      event.preventDefault();
+      chatInput.value = '/';
+      chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length;
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      chatInput.value = '';
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  });
   // 検索語が変わったら、最新の状態をもう一度描き直して絞り込みを反映します。
   // 検索欄に「/」と入れた時点で、メッセージ入力欄へ移ります（検索欄は空に戻します）。
   logSearchInput?.addEventListener('input', () => {
@@ -2511,6 +3059,12 @@
     if (commandActive && event.key === 'Escape') {
       event.preventDefault();
       hideCommandSuggestions();
+      return;
+    }
+    // 行式リスト（/vc・/vp）では Ctrl+Enter（Cmd+Enter）で切替を予約し、「変更」でまとめて切り替えます。
+    if (commandActive && event.key === 'Enter' && (event.ctrlKey || event.metaKey) && ROW_COMMAND_MODES[activeCommand?.mode]) {
+      event.preventDefault();
+      toggleCommandMultiSelect();
       return;
     }
     // 入力履歴。コマンド候補の操作中でないとき、↑/↓で送信履歴をたどります。

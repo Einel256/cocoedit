@@ -79,6 +79,10 @@
       'CCFOLIA_CHAT_DICE',
       'CCFOLIA_CHAT_PALETTE',
       'CCFOLIA_CHAT_PALETTE_SCAN_ALL',
+      'CCFOLIA_CHAR_PIECES',
+      'CCFOLIA_CHAR_PIECE_TOGGLE',
+      'CCFOLIA_SCREEN_PANELS',
+      'CCFOLIA_SCREEN_PANEL_TOGGLE',
       'CCFOLIA_SCENE_LIST',
       'CCFOLIA_CLEANUP_UI',
       'CCFOLIA_AUTO_SKIP_MODE',
@@ -96,6 +100,10 @@
           ...payload,
           type: `${type}_IN_ROOM`
         });
+        // ルーム側のContent Scriptから応答が無い（undefined）ときは原因を区別できるようにします。
+        if (result === undefined) {
+          throw new Error(`${type}に対してルーム側から応答がありません。拡張機能を更新した場合は、拡張機能の管理画面で再読み込みし、CCFOLIAのページも再読み込みしてください。`);
+        }
         sendResponse(result);
       } catch (reason) {
         const messageText = reason instanceof Error ? reason.message : String(reason);
