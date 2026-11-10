@@ -98,6 +98,13 @@
           <input id="log-search" type="search" placeholder="ログを検索（発言者・本文）">
           <output id="log-search-count" aria-live="polite"></output>
         </div>
+        <div class="session-row" aria-label="セッションタイマー・メモ">
+          <button id="session-timer-toggle" type="button">開始</button>
+          <button id="session-timer-reset" type="button" aria-label="セッションタイマーをリセット">リセット</button>
+          <output id="session-timer-display" aria-label="セッション経過時間">00:00</output>
+          <button id="session-memo-toggle" type="button" aria-expanded="false">メモ</button>
+        </div>
+        <textarea id="session-memo" rows="3" placeholder="メモ（自動保存されます）" aria-label="セッションメモ" hidden></textarea>
         <ol id="chat-log" aria-live="polite"></ol>
         <div class="chat-toolbar">
           <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="チャットタブ"></div>

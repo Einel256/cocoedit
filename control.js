@@ -43,6 +43,10 @@
   const fontSizeSelect = document.getElementById('font-size-select');
   const logSearchInput = document.getElementById('log-search');
   const logSearchCount = document.getElementById('log-search-count');
+  const sessionTimerToggle = document.getElementById('session-timer-toggle');
+  const sessionTimerDisplay = document.getElementById('session-timer-display');
+  const sessionMemoToggle = document.getElementById('session-memo-toggle');
+  const sessionMemoInput = document.getElementById('session-memo');
   const settingsExportButton = document.getElementById('settings-export');
   const settingsImportButton = document.getElementById('settings-import');
   const settingsIoJson = document.getElementById('settings-io-json');
@@ -51,6 +55,8 @@
   const FONT_SIZE_STORAGE_KEY = 'ccfolia-font-size-v1';
   const ALIAS_EDITOR_MODE_STORAGE_KEY = 'ccfolia-alias-editor-mode-v1';
   const CHARACTER_STORAGE_KEY = 'ccfolia-status-characters-v1';
+  const SESSION_TIMER_STORAGE_KEY = 'ccfolia-session-timer-v1';
+  const SESSION_MEMO_STORAGE_KEY = 'ccfolia-session-memo-v1';
   const PALETTE_STORAGE_KEY = 'ccfolia-chat-palette-v1';
   const ALIAS_STORAGE_KEY = 'ccfolia-alias-v1';
   let aliasEditorLarge = false;
@@ -448,6 +454,11 @@
   // 全文への取り込みを短いあいだ止めます（間違ったタブの行が混ざるのを防ぎます）。
   let tabMergeGuarded = false;
   let lastUnreadKey = '';
+  // 未読タブを開いたときの「未読位置へのジャンプ」。クリック時点で、そのタブを最後に見たときの
+  // ログ行の通し番号（rowIndex）を覚え、描画後にそこより新しい行を強調表示してスクロールします。
+  let pendingUnreadJump = null;
+  // タブごとの「最後に見た行の通し番号」。表示中のタブで随時更新します。
+  const lastSeenRowIndexByTab = new Map();
   // 選択中のチャットタブ（インデックスの文字列。null なら未取得）。
   // CCFOLIA側の状態（tab.selected）と、ボタンを押したときの即時反映の両方を拾います。
   let selectedTabIndex = null;
@@ -666,6 +677,11 @@
     if (!button || button.disabled) return;
     const index = Number(button.dataset.index);
     if (!Number.isInteger(index)) return;
+    // 未読タブを開いたときは、新着メッセージの位置へジャンプして強調表示します。
+    // 「最後に見た行の通し番号」を覚えておき、描画後にそれより新しい行を探します。
+    pendingUnreadJump = button.classList.contains('has-unread')
+      ? { index, fromRow: lastSeenRowIndexByTab.get(index) ?? null }
+      : null;
     // 押した時点で選択表示を先に切り替え、CCFOLIA側の切替が確定してから状態を同期します。
     selectedTabIndex = String(index);
     for (const tab of chatTabs.querySelectorAll('button.chat-tab')) {
@@ -971,6 +987,8 @@
     // 検索語があるときはログ項目を絞り込み、ヒット数を検索窓の横に表示します。
     const searchWords = logSearchQuery.split(/\s+/).filter(Boolean);
     let shownMessageCount = 0;
+    // 描画した行と、その行の通し番号（rowIndex。未読ジャンプで新着の開始位置を探すのに使います）。
+    const renderedRows = [];
     for (const message of logMessages) {
       if (searchWords.length && !messageMatchesLogSearch(message, logSearchQuery)) continue;
       shownMessageCount += 1;
@@ -1013,9 +1031,38 @@
       content.append(header, text);
       item.append(content);
       chatLog.append(item);
+      renderedRows.push({ item, rowIndex: message.rowIndex });
     }
     renderAliasExecutionStatus();
     if (previousScrollBottom) chatLog.scrollTop = chatLog.scrollHeight;
+    // 未読タブを開いた直後は、新着メッセージの位置へスクロールして強調表示します。
+    // （最下部への自動スクロールより優先します。）
+    if (pendingUnreadJump && selectedTab !== null && Number(selectedTab) === pendingUnreadJump.index) {
+      const fromRow = pendingUnreadJump.fromRow;
+      if (fromRow !== null && Number.isFinite(fromRow)) {
+        const newRows = renderedRows.filter((entry) => Number.isFinite(entry.rowIndex) && entry.rowIndex > fromRow);
+        if (newRows.length) {
+          for (const entry of newRows) entry.item.classList.add('is-new-message');
+          // 最初の未読行がログの上端に来るようにスクロールします（位置は実測の矩形で計算します）。
+          const firstRect = newRows[0].item.getBoundingClientRect();
+          const logRect = chatLog.getBoundingClientRect();
+          chatLog.scrollTop += firstRect.top - logRect.top - 4;
+          chatStatus.textContent = `未読${newRows.length}件の位置へジャンプしました。`;
+        }
+      }
+      pendingUnreadJump = null;
+    }
+    // いま見ているタブの「最後に見た行」を更新します（次に未読で開いたときのジャンプ位置）。
+    if (selectedTab !== null) {
+      let seenMaxRow = -Infinity;
+      for (const entry of renderedRows) {
+        if (Number.isFinite(entry.rowIndex) && entry.rowIndex > seenMaxRow) seenMaxRow = entry.rowIndex;
+      }
+      if (Number.isFinite(seenMaxRow)) {
+        const previous = lastSeenRowIndexByTab.get(Number(selectedTab));
+        lastSeenRowIndexByTab.set(Number(selectedTab), Number.isFinite(previous) ? Math.max(previous, seenMaxRow) : seenMaxRow);
+      }
+    }
     if (logSearchCount) {
       const totalMessageCount = logMessages.length;
       logSearchCount.textContent = searchWords.length
@@ -2062,12 +2109,32 @@
       });
       // 行式リストのときは候補の下に、変更予定の件数と「確定」ボタンのバーを出します。
       if (ROW_COMMAND_MODES[commandMode]) {
+        const rowSpecFooter = ROW_COMMAND_MODES[commandMode];
         const footer = document.createElement('div');
         footer.className = 'command-suggestions-footer';
         const summary = document.createElement('span');
         summary.textContent = commandSelections.length
-          ? `${commandSelections.length}${ROW_COMMAND_MODES[commandMode].unit}を変更予定`
+          ? `${commandSelections.length}${rowSpecFooter.unit}を変更予定`
           : '各行のボタンで表示/非表示の変更を予定に入れられます';
+        footer.append(summary);
+        // スクリーンパネル（/vp）では「すべて非表示」を1発で予定に入れます。
+        // シーンの切り替え時など、表示中のパネルを全部しまいたいときに使います。
+        if (commandMode === 'w') {
+          const shownPanels = screenPanelEntries.filter((panel) => panel.shown);
+          const hideAllButton = document.createElement('button');
+          hideAllButton.type = 'button';
+          hideAllButton.className = 'command-suggestions-hide-all';
+          hideAllButton.textContent = shownPanels.length
+            ? `すべて非表示（${shownPanels.length}枚）`
+            : 'すべて非表示';
+          hideAllButton.disabled = !shownPanels.length;
+          hideAllButton.title = '表示中のパネルをすべて「→非表示」の変更予定に入れます';
+          hideAllButton.addEventListener('click', () => {
+            commandSelections = shownPanels.map((panel) => ({ name: panel.name, on: false }));
+            renderCommandSuggestions();
+          });
+          footer.append(hideAllButton);
+        }
         const runButton = document.createElement('button');
         runButton.type = 'button';
         runButton.className = 'command-suggestions-confirm';
@@ -2078,7 +2145,7 @@
           if (!names.length) return;
           await runRowToggles(commandMode, names);
         });
-        footer.append(summary, runButton);
+        footer.append(runButton);
         commandSuggestions.append(footer);
       }
     }
@@ -2388,15 +2455,13 @@
   });
 
   const storeAcquiredCharacters = (characters) => {
-    const previousCharacters = acquiredCharacters ?? [];
-    acquiredCharacters = characters.map((character) => {
-      const previous = previousCharacters.find((item) => item.id === character.id)
-        ?? previousCharacters.find((item) => item.name === character.name);
-      const number = Number(previous?.commandNumber);
-      return Number.isInteger(number) && number >= 1 && number <= 9
-        ? { ...character, commandNumber: number }
-        : character;
-    });
+    // 「更新」のたびに、キャラクター一覧の上から順に番号1〜9を自動で割り当てます。
+    // 前回の手動設定は引き継がず、いまの並び順に合わせて振り直します（10人目以降は番号なし）。
+    // 盤面のキャラの出入れで並び順が変わっても、更新すればコマンドの番号が追従します。
+    acquiredCharacters = characters.map((character, index) => ({
+      ...character,
+      commandNumber: index < 9 ? index + 1 : null
+    }));
     localStorage.setItem(CHARACTER_STORAGE_KEY, JSON.stringify(acquiredCharacters));
     syncCommandMap();
     renderCharacterChoices();
@@ -2453,6 +2518,7 @@
     chatStateRequestId += 1;
     latestChatState = null;
     selectedTabIndex = null;
+    pendingUnreadJump = null;
     chatTabs.replaceChildren();
     chatLog.replaceChildren();
     if (logSearchCount) logSearchCount.textContent = '';
@@ -2603,6 +2669,126 @@
     }
   };
   refreshScanButton.addEventListener('click', () => void updateEverything({ force: true }));
+
+  // セッションタイマー。「開始」で動き出し、もう一度押すと**一時停止**（もう一度で続きから再開）、
+  // 「リセット」で0に戻します。開始・停止の時刻をlocalStorageに残すため、制御ウィンドウを
+  // 開き直しても経過時間は続きます。
+  const SESSION_TIMER_STATE_RUNNING = 'running';
+  const SESSION_TIMER_STATE_PAUSED = 'paused';
+  const readSessionTimerState = () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(SESSION_TIMER_STORAGE_KEY) || 'null');
+      if (stored?.state === SESSION_TIMER_STATE_RUNNING && Number.isFinite(stored.startedAt)) {
+        return { state: SESSION_TIMER_STATE_RUNNING, startedAt: stored.startedAt, elapsed: 0 };
+      }
+      if (stored?.state === SESSION_TIMER_STATE_PAUSED && Number.isFinite(stored.elapsed)) {
+        return { state: SESSION_TIMER_STATE_PAUSED, startedAt: null, elapsed: stored.elapsed };
+      }
+    } catch {
+      // 読めなければ止まっている扱いにします。
+    }
+    return { state: 'idle', startedAt: null, elapsed: 0 };
+  };
+  const saveSessionTimerState = (state) => {
+    try {
+      if (state.state === SESSION_TIMER_STATE_RUNNING) {
+        localStorage.setItem(SESSION_TIMER_STORAGE_KEY, JSON.stringify({
+          state: SESSION_TIMER_STATE_RUNNING,
+          startedAt: state.startedAt
+        }));
+      } else if (state.state === SESSION_TIMER_STATE_PAUSED) {
+        localStorage.setItem(SESSION_TIMER_STORAGE_KEY, JSON.stringify({
+          state: SESSION_TIMER_STATE_PAUSED,
+          elapsed: state.elapsed
+        }));
+      } else {
+        localStorage.removeItem(SESSION_TIMER_STORAGE_KEY);
+      }
+    } catch {
+      // 保存できなくても動作は続けます。
+    }
+  };
+  const formatSessionDuration = (elapsedMs) => {
+    const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const pad = (value) => String(value).padStart(2, '0');
+    return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
+  };
+  let sessionTimerState = readSessionTimerState();
+  let sessionTimerInterval = null;
+  const sessionTimerElapsedNow = () => (sessionTimerState.state === SESSION_TIMER_STATE_RUNNING
+    ? Date.now() - sessionTimerState.startedAt
+    : sessionTimerState.elapsed);
+  const renderSessionTimer = () => {
+    const running = sessionTimerState.state === SESSION_TIMER_STATE_RUNNING;
+    const paused = sessionTimerState.state === SESSION_TIMER_STATE_PAUSED;
+    sessionTimerToggle.textContent = running ? '一時停止' : paused ? '再開' : '開始';
+    sessionTimerToggle.setAttribute('aria-pressed', String(running));
+    sessionTimerDisplay.textContent = formatSessionDuration(sessionTimerElapsedNow());
+  };
+  const stopSessionTimerTick = () => {
+    clearInterval(sessionTimerInterval);
+    sessionTimerInterval = null;
+  };
+  // メインボタン（開始 → 一時停止 → 再開 → 一時停止…）。
+  const toggleSessionTimer = () => {
+    if (sessionTimerState.state === SESSION_TIMER_STATE_RUNNING) {
+      // 一時停止。経過時間を残して止めます（「再開」で続きから）。
+      sessionTimerState = { state: SESSION_TIMER_STATE_PAUSED, startedAt: null, elapsed: Date.now() - sessionTimerState.startedAt };
+      saveSessionTimerState(sessionTimerState);
+      stopSessionTimerTick();
+    } else {
+      // 開始・再開。止まっていたぶん（一時停止中の経過）を含めて動かし直します。
+      const base = sessionTimerState.state === SESSION_TIMER_STATE_PAUSED ? sessionTimerState.elapsed : 0;
+      sessionTimerState = { state: SESSION_TIMER_STATE_RUNNING, startedAt: Date.now() - base, elapsed: 0 };
+      saveSessionTimerState(sessionTimerState);
+      stopSessionTimerTick();
+      sessionTimerInterval = window.setInterval(renderSessionTimer, 1000);
+    }
+    renderSessionTimer();
+  };
+  // リセット。動か中でも止めて0に戻します。
+  const resetSessionTimer = () => {
+    sessionTimerState = { state: 'idle', startedAt: null, elapsed: 0 };
+    saveSessionTimerState(sessionTimerState);
+    stopSessionTimerTick();
+    renderSessionTimer();
+  };
+  sessionTimerToggle?.addEventListener('click', toggleSessionTimer);
+  document.getElementById('session-timer-reset')?.addEventListener('click', resetSessionTimer);
+  // 起動時に前回の続きから走らせ直します。
+  if (sessionTimerState.state === SESSION_TIMER_STATE_RUNNING) {
+    sessionTimerInterval = window.setInterval(renderSessionTimer, 1000);
+  }
+  renderSessionTimer();
+
+  // セッションメモ。入力のたびにlocalStorageへ保存します（開き直しても残ります）。
+  try {
+    sessionMemoInput.value = localStorage.getItem(SESSION_MEMO_STORAGE_KEY) ?? '';
+  } catch {
+    // 読めなくても空欄のまま使えます。
+  }
+  let sessionMemoSaveTimer = null;
+  sessionMemoInput?.addEventListener('input', () => {
+    clearTimeout(sessionMemoSaveTimer);
+    sessionMemoSaveTimer = window.setTimeout(() => {
+      try {
+        localStorage.setItem(SESSION_MEMO_STORAGE_KEY, sessionMemoInput.value);
+      } catch {
+        // 容量上限などで保存できなくても入力は続けられます。
+      }
+    }, 300);
+  });
+  sessionMemoToggle?.addEventListener('click', () => {
+    const show = sessionMemoInput.hidden;
+    sessionMemoInput.hidden = !show;
+    sessionMemoToggle.setAttribute('aria-expanded', String(show));
+    if (show) sessionMemoInput.focus();
+  });
+
+
 
   charactersElement.addEventListener('change', (event) => {
     const select = event.target.closest('.character-number');

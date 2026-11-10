@@ -1197,6 +1197,14 @@
     const sendButton = form?.querySelector('button[type="submit"]');
     if (!sendButton || !sendButton.isConnected) throw new Error('CCFOLIAの送信ボタンが見つかりません。');
     const messageText = String(text ?? '');
+    // 「1h-10」「2m+5」のようなステータスコマンドは、CCFOLIAの入力欄で送ったときと同じく
+    // 実際にHP/MP/SANを増減させて chat には送りません。拡張チャットから送った場合も
+    // キー入力の横取りが効かないため、ここで明示的に実行します。
+    const chatCommands = parseChatCommands(messageText);
+    if (chatCommands) {
+      await executeChatCommand(textarea, chatCommands);
+      return { ok: true };
+    }
     // 「r<n> <m>」/「rg<n> <m>」は「resb…」の形に置き換えて送ります（例: r5 3 → resb2）。
     const statConverted = parseStatCommandLines(messageText);
     const sendText = makeResCommandText(messageText) ?? statConverted?.join('\n') ?? messageText;
@@ -1205,7 +1213,33 @@
     // Wait for CCFOLIA's React submit handler to clear the draft before the
     // control window reads the updated room log. Kept very short so repeated
     // dice/SAN sends do not create a noticeable "cannot send" window.
-    await waitFor(() => textarea.isConnected && textarea.value === '', 300);
+    let submitted = await waitFor(() => textarea.isConnected && textarea.value === '', 300);
+    // 連続送信（n:文面の繰り返し・関数の連送）で、CCFOLIA側の送信処理が前の1件の処理中だと
+    // その回の送信が握りつぶされて「n回の指定がn-1回しか送られない」ことがあります。
+    // 下書きが空にならない＝送信が受け付けられていない証拠なので、受け付けられるまで
+    // 最大2回押し直します。ただし「/scene」などログ行を作らないコマンドは、
+    // 送り直すと二重実行になるため対象外です。
+    if (!submitted && !sendText.startsWith('/')) {
+      // まず、ログの通し番号（data-index）が進んでいないか（=本当に送れていないか）を確認します。
+      // 描画が遅いだけのときはここで受け付けられたことが分かるので、送り直しません。
+      const lastLogRowIndex = () => {
+        const rows = document.querySelectorAll('ul[aria-label="ルームチャット"][role="log"] [data-index]');
+        const index = Number(rows[rows.length - 1]?.getAttribute('data-index'));
+        return Number.isFinite(index) ? index : null;
+      };
+      const rowBeforeSend = lastLogRowIndex();
+      for (let retry = 0; retry < 2 && !submitted; retry += 1) {
+        const logged = await waitFor(() => {
+          const index = lastLogRowIndex();
+          return rowBeforeSend !== null && index !== null && index > rowBeforeSend;
+        }, 200);
+        if (logged) break;
+        log('送信が受け付けられていないため、もう一度送ります。');
+        setReactInputValue(textarea, sendText);
+        sendButton.click();
+        submitted = await waitFor(() => textarea.isConnected && textarea.value === '', 300);
+      }
+    }
     if (!parseChatCommands(sendText) && !statConverted) {
       const expectedText = sendText.replace(/\s+/g, ' ').trim();
       await waitFor(() => {
