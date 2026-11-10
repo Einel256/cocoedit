@@ -251,6 +251,12 @@
     .replace(/[\u200B\u200C\u200D\uFEFF]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+  // 名前の対応づけ用。空白の全角・半角や連続空白の違いを吸収してそろえます。
+  // 選択キャラの一覧（content側で読み込み時に半角にそろえる）と、パレットを
+  // 保存したときのキー（CCFOLIAの発言名）を同じ形にするためです。
+  const canonicalCharacterName = (value) => String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
   // 比較用の内容トークン。メッセージオブジェクトは保存ログに残り続けるため、結果はWeakMapで覚えます。
   const logTokenCache = new WeakMap();
   const logToken = (message) => {
@@ -463,7 +469,7 @@
       if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {};
       const map = {};
       for (const [name, entries] of Object.entries(stored)) {
-        if (Array.isArray(entries) && entries.every((entry) => typeof entry === 'string')) map[name] = entries;
+        if (Array.isArray(entries) && entries.every((entry) => typeof entry === 'string')) map[canonicalCharacterName(name)] = entries;
       }
       return map;
     } catch {
@@ -483,8 +489,9 @@
     clearLegacyPaletteEntries();
   };
   const clearChatPaletteEntries = (name) => {
-    chatPaletteMap = name
-      ? { ...chatPaletteMap, [name]: [] }
+    const key = canonicalCharacterName(name);
+    chatPaletteMap = key
+      ? { ...chatPaletteMap, [key]: [] }
       : {};
     savePaletteMap();
     clearLegacyPaletteEntries();
@@ -494,7 +501,9 @@
   // 発言者用のパレット。キャラごとの保存がなければ、旧フラット配列へフォールバックします。
   // フォールバックは参照をメモ化します（毎回JSONを解析すると参照が変わり、無駄に再描画するため）。
   const paletteEntriesFor = (name) => {
-    if (name && Array.isArray(chatPaletteMap[name])) return chatPaletteMap[name];
+    // 保存キー・参照どちらも空白の全角・半角を吸収した形で照合します。
+    const key = canonicalCharacterName(name);
+    if (key && Array.isArray(chatPaletteMap[key])) return chatPaletteMap[key];
     if (!legacyPaletteEntries) legacyPaletteEntries = readStoredPalette() ?? [];
     return legacyPaletteEntries;
   };
@@ -1808,7 +1817,8 @@
   let commandMatches = [];
   let commandIndex = 0;
   let commandQuery = null;
-  // 行式リスト（/vc・/vp）の変更予約（クリック・Ctrl+Enterで対象を選び、「変更」でまとめて実行します）。
+  // 行式リスト（/vc・/vp）は1ボタン方式です。行のボタンで表示/非表示の予定を付け替え、
+  // 候補の下の「確定」ボタン（またはEnter）でまとめて切り替えます。
   let commandSelections = [];
   const commandDefinitions = [
     { command: '/t', description: 'タブ切り替え' },
@@ -1824,20 +1834,18 @@
   ];
   // 行式リストコマンド（/vc=マイキャラクター、/vp=スクリーンパネル）の共通仕様。
   // 候補データ・CCFOLIA側への要求・表示の文言だけが違い、fzf風の操作は共通です。
+  // 候補の行には現在の状態を示す1ボタンだけを出し、押すとその場で表示/非表示を切り替えます。
   const ROW_COMMAND_MODES = {
     v: {
       key: 'v',
       fetchLabel: 'マイキャラクター一覧',
-      badge: '盤面',
       unit: '人',
-      summaryOn: '追加',
-      summaryOff: '外した',
-      // 変更予約チップの言葉（現在がonならswitchOff、offならswitchOnを出します）。
-      switchOn: '→追加',
-      switchOff: '→外す',
+      summaryOn: '表示',
+      summaryOff: '非表示',
+      // 現在の状態を示す1ボタンの文字（表示中=緑、非表示=赤）。
+      onLabel: '表示中',
+      offLabel: '非表示',
       restart: 'マイキャラクター一覧を取得しています…',
-      offWord: '押すと「変更」で盤面に追加します',
-      onWord: '押すと「変更」で盤面から外します',
       isOn: (candidate) => candidate.onBoard === true,
       patch: (name, on) => {
         pieceCharacterEntries = pieceCharacterEntries.map((character) =>
@@ -1849,15 +1857,12 @@
     w: {
       key: 'w',
       fetchLabel: 'スクリーンパネル一覧',
-      badge: '表示中',
       unit: '枚',
       summaryOn: '表示',
-      summaryOff: '非表示にした',
-      switchOn: '→表示',
-      switchOff: '→非表示',
+      summaryOff: '非表示',
+      onLabel: '表示中',
+      offLabel: '非表示',
       restart: 'スクリーンパネル一覧を取得しています…',
-      offWord: '押すと「変更」で表示します',
-      onWord: '押すと「変更」で非表示にします',
       isOn: (candidate) => candidate.shown === true,
       patch: (name, on) => {
         screenPanelEntries = screenPanelEntries.map((panel) =>
@@ -1977,7 +1982,7 @@
     // モード・絞り込み語が変わったらハイライトを初期位置へ戻します。
     // シーン(/s)は初期位置を「現在のシーン」に合わせ、それ以外は先頭に当てます。
     let resetHighlight = parsed.mode !== commandMode || parsed.query !== commandQuery;
-    // /vc・/vp の選択はモードごとに独立させるため、モードが変わったら空にします。
+    // /vc・/vp の変更予定はモードごとに独立させるため、モードが変わったら空にします。
     if (parsed.mode !== commandMode) commandSelections = [];
     commandMode = parsed.mode;
     commandQuery = parsed.query;
@@ -2021,53 +2026,52 @@
         button.className = 'skill-suggestion-item';
         button.classList.toggle('is-highlighted', index === commandIndex);
         // テキストは先に入れます（textContentへの代入は子要素を消してしまうため）、
-        // そのあとで行式リスト用の現在状態バッジと切替ボタンチップを整えます。
+        // そのあとで行式リスト用の1ボタンを整えます。
         button.textContent = candidate.label;
         const rowSpec = ROW_COMMAND_MODES[commandMode];
         if (rowSpec) {
           const isOn = rowSpec.isOn(candidate);
-          const marked = commandSelections.find((item) => item.name === candidate.name);
+          const pending = commandSelections.find((item) => item.name === candidate.name);
+          const plannedOn = pending ? pending.on === true : isOn;
           button.classList.toggle('is-on', isOn);
-          button.classList.toggle('is-selected', Boolean(marked));
-          // 現在の状態（盤面／表示中）。
-          const badge = document.createElement('span');
-          badge.className = 'row-state-badge';
-          badge.textContent = rowSpec.badge;
-          badge.setAttribute('aria-hidden', 'true');
-          button.append(badge);
-          // 切替ボタン。行を押すたび「変更でこうなる」の予約の付け外しになります。
-          const switchChip = document.createElement('span');
-          switchChip.className = 'row-switch-badge';
-          switchChip.textContent = isOn ? rowSpec.switchOff : rowSpec.switchOn;
-          switchChip.setAttribute('aria-hidden', 'true');
-          button.append(switchChip);
+          button.classList.toggle('is-pending', Boolean(pending));
+          // 現在の状態を示す1ボタン。押すと表示/非表示の予定を付け替え、「確定」でまとめて切り替えます。
+          // 予定を入れた行は、切り替え後の状態（→表示／→非表示）を出します。
+          const toggleChip = document.createElement('span');
+          toggleChip.className = 'row-toggle-button';
+          toggleChip.classList.toggle('is-on', plannedOn);
+          toggleChip.textContent = pending ? (plannedOn ? '→表示' : '→非表示') : (isOn ? rowSpec.onLabel : rowSpec.offLabel);
+          toggleChip.setAttribute('aria-hidden', 'true');
+          button.append(toggleChip);
           const detail = candidate.detail ? `（${candidate.detail}）` : '';
-          button.title = `${candidate.label}${detail}：${isOn ? rowSpec.onWord : rowSpec.offWord}`;
+          button.title = pending
+            ? `${candidate.label}${detail}：変更予定（もう一度押すと予定を外します）`
+            : `${candidate.label}${detail}：押すと${isOn ? '非表示' : '表示'}に変更予定に入れ、「確定」で切り替えます`;
         }
         if (!rowSpec) button.title = candidate.title ?? candidate.label;
         button.addEventListener('click', () => {
           commandIndex = index;
-          // 行式リスト（/vc・/vp）ではクリックで切替を予約し、「変更」でまとめて実行します。
+          // 行式リスト（/vc・/vp）ではクリックで表示/非表示の予定を付け替え、「確定」でまとめて実行します。
           if (ROW_COMMAND_MODES[commandMode]) {
-            toggleCommandMultiSelect();
+            toggleRowSelection();
             return;
           }
           void executeCommand();
         });
         commandSuggestions.append(button);
       });
-      // 行式リストのときは候補の下に、予約した件数と「変更」ボタンのバーを出します。
+      // 行式リストのときは候補の下に、変更予定の件数と「確定」ボタンのバーを出します。
       if (ROW_COMMAND_MODES[commandMode]) {
         const footer = document.createElement('div');
         footer.className = 'command-suggestions-footer';
         const summary = document.createElement('span');
         summary.textContent = commandSelections.length
           ? `${commandSelections.length}${ROW_COMMAND_MODES[commandMode].unit}を変更予定`
-          : '各行の切替ボタンで変更を予約できます';
+          : '各行のボタンで表示/非表示の変更を予定に入れられます';
         const runButton = document.createElement('button');
         runButton.type = 'button';
-        runButton.className = 'command-suggestions-run';
-        runButton.textContent = commandSelections.length ? `変更（${commandSelections.length}件）` : '変更';
+        runButton.className = 'command-suggestions-confirm';
+        runButton.textContent = commandSelections.length ? `確定（${commandSelections.length}件）` : '確定';
         runButton.disabled = !commandSelections.length;
         runButton.addEventListener('click', async () => {
           const names = commandSelections.map((item) => item.name);
@@ -2083,10 +2087,10 @@
     // 何を選んでいるのか分からなくなるため、ハイライトを見える位置へ送ります。
     const highlighted = commandSuggestions.querySelector('.skill-suggestion-item.is-highlighted');
     if (highlighted) highlighted.scrollIntoView({ block: 'nearest' });
-    // 行式リスト（/vc・/vp）の予約中は、件数と確定方法を出します。
+    // 行式リスト（/vc・/vp）の予定中は、件数と確定方法を出します。
     if (ROW_COMMAND_MODES[commandMode]) {
       chatStatus.textContent = commandSelections.length
-        ? `${commandSelections.length}${ROW_COMMAND_MODES[commandMode].unit}を変更予定。「変更」ボタン（またはEnter）でまとめて切り替えます（行クリック・Ctrl+Enterで予約の追加・解除、Escで予約をクリア）`
+        ? `${commandSelections.length}${ROW_COMMAND_MODES[commandMode].unit}を変更予定。「確定」ボタン（またはEnter）でまとめて切り替えます（行クリック・Ctrl+Enterで予定の追加・解除、Escで予定をクリア）`
         : '';
     }
     // 技能候補はコマンド入力中は表示しません。
@@ -2104,16 +2108,16 @@
     renderCommandSuggestions();
   };
 
-  // 行式リスト（/vc・/vp）の変更予約（クリック・Ctrl+Enter）。ハイライト中の候補を
-  // 「変更で切り替える対象」に加えたり外したりします。ハイライトは動かさず、その場で付け外しします。
-  const toggleCommandMultiSelect = () => {
+  // 行式リスト（/vc・/vp）の変更予定（クリック・Ctrl+Enter）。ハイライト中の候補を
+  // 「確定で切り替える対象」に加えたり外したりします。ハイライトは動かさず、その場で付け外しします。
+  const toggleRowSelection = () => {
     if (!ROW_COMMAND_MODES[commandMode]) return;
     const candidate = commandMatches[commandIndex];
     if (!candidate) return;
     if (commandSelections.some((item) => item.name === candidate.name)) {
       commandSelections = commandSelections.filter((item) => item.name !== candidate.name);
     } else {
-      // 予約時点の候補の状態の逆を「変更後の状態」として覚えておきます（表示向け。実行はCCFOLIA側の現在値で切り替わります）。
+      // 予定時点の候補の状態の逆を「変更後の状態」として覚えておきます（表示向け。実行はCCFOLIA側の現在値で切り替わります）。
       commandSelections = [...commandSelections, { name: candidate.name, on: !rowSpecIsOn(commandMode, candidate) }];
     }
     renderCommandSuggestions();
@@ -2124,7 +2128,7 @@
     return rowSpec ? rowSpec.isOn(candidate) : false;
   };
 
-  // 行式リスト（/vc・/vp）の確定（「変更」ボタン・Enter）。予約した行をまとめて切り替えます。
+  // 行式リスト（/vc・/vp）の確定（「確定」ボタン・Enter）。予定した行をまとめて切り替えます。
   // 複数件でもルーム側ではダイアログを一度だけ開いて順に押すので、画面がほとんどちらつきません。
   const runRowToggles = async (mode, names) => {
     const rowSpec = ROW_COMMAND_MODES[mode];
@@ -2242,9 +2246,9 @@
       return;
     }
     if (ROW_COMMAND_MODES[commandMode]) {
-      // 「変更」の確定。予約が無いときは、ハイライト中の1行を予約の対象に入れて待ちます。
+      // 「確定」。予定が無いときは、ハイライト中の1行を予定に入れて待ちます。
       if (!commandSelections.length) {
-        toggleCommandMultiSelect();
+        toggleRowSelection();
         return;
       }
       await runRowToggles(commandMode, commandSelections.map((item) => item.name));
@@ -2623,7 +2627,7 @@
     chatPaletteEntries = result.entries ?? [];
     const name = (typeof result.characterName === 'string' && result.characterName) ? result.characterName : speakerCharacterName();
     if (name) {
-      chatPaletteMap = { ...chatPaletteMap, [name]: chatPaletteEntries };
+      chatPaletteMap = { ...chatPaletteMap, [canonicalCharacterName(name)]: chatPaletteEntries };
       savePaletteMap();
     }
     savePaletteEntries();
@@ -3062,10 +3066,10 @@
       hideCommandSuggestions();
       return;
     }
-    // 行式リスト（/vc・/vp）では Ctrl+Enter（Cmd+Enter）で切替を予約し、「変更」でまとめて切り替えます。
+    // 行式リスト（/vc・/vp）では Ctrl+Enter（Cmd+Enter）で表示/非表示の変更予定を付け替え、「確定」でまとめて切り替えます。
     if (commandActive && event.key === 'Enter' && (event.ctrlKey || event.metaKey) && ROW_COMMAND_MODES[activeCommand?.mode]) {
       event.preventDefault();
-      toggleCommandMultiSelect();
+      toggleRowSelection();
       return;
     }
     // 入力履歴。コマンド候補の操作中でないとき、↑/↓で送信履歴をたどります。

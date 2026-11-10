@@ -379,35 +379,30 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: .
   outline-offset: -1px;
 }
 .suggestion-empty { display: block; padding: 6px 10px; color: var(--muted); font-size: .923rem; cursor: default; }
-/* 行式リスト（/vc・/vp）: 現在の状態の小バッジ（「盤面」「表示中」。onのときだけ緑で出します）。 */
-.skill-suggestion-item .row-state-badge {
+/* 行式リスト（/vc・/vp）: 現在の状態を示す1ボタン。押すと表示/非表示の変更予定を付け替え、
+   候補の下の「確定」でまとめて切り替わります。表示中は緑、非表示は赤で出します。 */
+.skill-suggestion-item .row-toggle-button {
   margin-left: 8px;
-  padding: 1px 7px;
+  padding: 1px 9px;
   border-radius: 9px;
   font-size: .82rem;
-  background: rgb(255 255 255 / .10);
-  color: var(--muted);
+  font-weight: 600;
+  background: #c62828;
+  color: #ffcdd2;
 }
-.skill-suggestion-item.is-on .row-state-badge {
-  background: rgb(67 160 71 / .35);
-  color: #b9f6ca;
-}
-/* 行式リスト（/vc・/vp）の切替ボタンチップ。各行の右に「これを押すとこうなる」を出します。
-   行を押して変更を予約すると緑になり、下の「変更」ボタンでまとめて実行します。 */
-.skill-suggestion-item .row-switch-badge {
-  margin-left: 8px;
-  padding: 1px 7px;
-  border-radius: 9px;
-  font-size: .82rem;
-  background: rgb(255 255 255 / .10);
-  color: var(--muted);
-}
-.skill-suggestion-item.is-selected .row-switch-badge {
+.skill-suggestion-item .row-toggle-button.is-on {
   background: #2e7d32;
   color: #fff;
 }
-.skill-suggestion-item.is-selected { background: rgb(46 125 50 / .30); }
-/* 行式リスト（/vc・/vp）の一括実行バー。予約した件数と「変更」ボタンを候補の下に出します。 */
+/* 変更予定を入れた行とボタン。切り替え後の状態（→表示／→非表示）を示し、枠で強調します。 */
+.skill-suggestion-item.is-pending { background: rgb(255 255 255 / .10); }
+.skill-suggestion-item.is-pending .row-toggle-button {
+  background: transparent;
+  outline: 1.5px solid currentColor;
+}
+.skill-suggestion-item.is-pending .row-toggle-button.is-on { color: #b9f6ca; }
+.skill-suggestion-item.is-pending .row-toggle-button:not(.is-on) { color: #ff8a80; }
+/* 行式リスト（/vc・/vp）の確定バー。変更予定の件数と「確定」ボタンを候補の下に出します。 */
 .command-suggestions-footer {
   display: flex;
   gap: 8px;
@@ -418,7 +413,7 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: .
   color: var(--muted);
   font-size: .923rem;
 }
-.command-suggestions-run {
+.command-suggestions-confirm {
   padding: 4px 14px;
   border: none;
   border-radius: 7px;
@@ -429,8 +424,8 @@ small { display: block; margin: 6px 10px 10px; color: var(--muted); font-size: .
   cursor: pointer;
   transition: background-color .12s ease;
 }
-.command-suggestions-run:disabled { background: rgb(255 255 255 / .12); color: var(--muted); cursor: default; }
-.command-suggestions-run:not(:disabled):hover { background: #388e3c; }
+.command-suggestions-confirm:disabled { background: rgb(255 255 255 / .12); color: var(--muted); cursor: default; }
+.command-suggestions-confirm:not(:disabled):hover { background: #388e3c; }
 #chat-input { grid-column: 1 / -1; grid-row: 2; width: 100%; min-height: 84px; padding: 9px 11px; resize: vertical; border: none; border-radius: 8px; background: rgb(255 255 255 / .04); font-size: 1.038rem; line-height: 1.5; }
 #chat-input:focus-visible { outline: none; background: rgb(255 255 255 / .06); }
 #clear-message, #send-message { grid-row: 1; min-height: 32px; padding: 5px 16px; border: 1px solid transparent; border-radius: 7px; font-weight: 600; font-size: 1rem; transition: background-color .12s ease, border-color .12s ease, transform .08s ease; }

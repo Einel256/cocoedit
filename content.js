@@ -33,6 +33,21 @@
       channel.port2.postMessage(0);
     })
     : wait(ms));
+  // 描画のフレームを2枚待ちます。スクロール後の再描画を待つ用途で、
+  // 表示中は約32ms、非表示中（rAFが進まない）は代替の短い待ちを使います。
+  const frameWait = () => new Promise((resolve) => {
+    if (document.hidden || typeof requestAnimationFrame !== 'function') {
+      fastWait(120).then(resolve);
+      return;
+    }
+    let frames = 0;
+    const tick = () => {
+      frames += 1;
+      if (frames >= 2) resolve();
+      else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
   const waitFor = async (predicate, timeout = 400) => {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
@@ -687,64 +702,140 @@
   };
 
   const getCharacterPickerOptions = async () => {
-    const selector = document.querySelector('button[aria-label="キャラクター選択"]');
-    if (!selector || !selector.isConnected) {
+    const selectorCandidates = [...document.querySelectorAll('button[aria-label="キャラクター選択"]')]
+      .filter((button) => button.isConnected);
+    const selector = selectorCandidates.find(visible) ?? selectorCandidates.at(-1) ?? null;
+    if (!selector) {
       log('キャラクター選択ボタンが見つかりませんでした（チャットの入力欄が隠れている可能性があります）。');
       return { selector, options: [], opened: false };
     }
-    const listSelector = 'ul.MuiList-root:has(.MuiListItemButton-root[role="button"])';
-    const menuRootSelector = '[role="dialog"], [role="listbox"], [role="menu"], .MuiPopover-root, .MuiMenu-root';
-    let characterLists = [...document.querySelectorAll(listSelector)].filter(visible);
-    const alreadyOpen = characterLists.length > 0;
+    if (!visible(selector)) {
+      // 折りたたまれたチャット側では選択ボタンがDOMに残るだけで押せません。
+      // 開かないクリックで待ち時間を浪費しないため、隠れている事実だけを読み取らせます。
+      log('キャラクター選択ボタンが隠れて押せないため、メニューを開けませんでした。');
+      return { selector, options: [], opened: false };
+    }
+    // CCFOLIAが実際に描く選択メニューの構造に合わせて読みます:
+    //   <div class="MuiPopover-paper">…<ul class="MuiList-root">
+    //     <div class="MuiListItemButton-root" role="button"> ← 返信対象の行（div要素）
+    //       <div class="MuiListItemAvatar-root"><img class="MuiAvatar-img">…</div>
+    //       <span class="MuiListItemText-primary">名前</span>
+    //       <p class="MuiListItemText-secondary">状態</p></div>…
+    const itemSelector = '.MuiListItemButton-root, [role="option"], [role="menuitem"]';
+    const readCharacterOptionsFromList = (list) => [...list.querySelectorAll(itemSelector)]
+      // 行は div 要素の MuiListItemButton でも、li や role 属性の異なる形でもそのまま読みます。
+      .filter((element) => visible(element) && element !== selector)
+      .filter((element) => !element.querySelector(itemSelector))
+      .map((element, index) => {
+        const image = element.querySelector('.MuiListItemAvatar img.MuiAvatar-img')
+          ?? element.querySelector('.MuiListItemAvatar img')
+          ?? element.querySelector('img.MuiAvatar-img');
+        // プライマリ文字（名前）→ aria-label → 1行目の順に読みます。
+        // MuiListItemText-primary が不在の行では、innerText の先頭行が名前になるレイアウトです。
+        const fallbackLines = (element.innerText || '').split('\n').map((line) => line.trim()).filter(Boolean);
+        const displayName = element.querySelector('.MuiListItemText-primary')?.textContent?.trim()
+          || element.getAttribute('aria-label')
+          || element.getAttribute('title')
+          || image?.getAttribute('alt')
+          || fallbackLines[0]
+          || '';
+        const state = element.querySelector('.MuiListItemText-secondary')?.textContent?.trim()
+          || fallbackLines.slice(1).join(' ')
+          || '';
+        // 名前は読み込んだ時点で、番号を付ける一覧（HP行からの取得）と同じ
+        // 「空白の全角→半角・連続空白を1つに」の形にそろえます。
+        // これで選択キャラの一覧・コマンド・発言名の対応関係が崩れません。
+        // （CCFOLIAへ書き込むときに必要になるため、原形は rawName で取っておきます。）
+        return {
+          name: canonicalName(displayName),
+          rawName: displayName,
+          key: image?.currentSrc || image?.src || '',
+          state,
+          element,
+          index
+        };
+      });
+    // 選択メニューのリストは、開かれたポップオーバー（MuiPopover-paper）の中に現れます。
+    // 技能パレットなど他のリストと混ざらないよう、紙の中のリストを最有力にします。
+    const menuRootSelector = '[role="dialog"], [role="listbox"], [role="menu"], .MuiPopover-paper, .MuiMenu-paper, .MuiPopover-root, .MuiMenu-root';
+    const menuRoots = () => [...document.querySelectorAll(menuRootSelector)].filter(visible);
+    const collectPickerLists = () => {
+      const paperLists = [];
+      for (const paper of menuRoots().filter((root) => root.classList.contains('MuiPopover-paper') || root.classList.contains('MuiMenu-paper'))) {
+        for (const list of paper.querySelectorAll('ul')) {
+          if (visible(list) && list.querySelector(itemSelector) && !paperLists.includes(list)) paperLists.push(list);
+        }
+      }
+      const looseLists = [...document.querySelectorAll('ul.MuiList-root, ul.MuiMenu-list, ul[role="listbox"], ul[role="menu"]')]
+        .filter((list) => visible(list) && list.querySelector(itemSelector))
+        .filter((list) => !paperLists.includes(list));
+      return [...new Set([...paperLists, ...looseLists])];
+    };
     const interactiveSelector = '[role="option"], [role="menuitem"], button, [role="button"], li, [tabindex="0"]';
     const visibleBefore = new Set([...document.querySelectorAll('*')].filter(visible));
-    const menusBefore = [...document.querySelectorAll(menuRootSelector)].filter(visible).length;
-    // メニューはMUIの遷移を伴って開くため、出現を確認しながら待ちます。
-    // リストの形が違うときは、メニュー領域だけでも出たことの確認に使います。
+    const menusBefore = menuRoots().length;
+    // メニューはMUIの遷移を伴って開き、メニュー枠のあとに中のリストが生えます。
+    // 枠だけ出たところで早合点せず、リスト（行）が読めるまで待ちます。
+    let bestListRead = null;
+    const findBestList = (paperOnly = false) => {
+      const candidates = collectPickerLists()
+        .filter((list) => !paperOnly
+          || list.closest('.MuiPopover-paper, .MuiMenu-paper'))
+        .map((list) => ({ list, options: readCharacterOptionsFromList(list).filter((option) => option.name) }))
+        .filter((candidate) => candidate.options.length > 0)
+        // もっとも多くのキャラを読められたリストを選択メニューとみなします。
+        .sort((a, b) => b.options.length - a.options.length);
+      return candidates[0] ?? null;
+    };
     const lookForMenu = async (timeout) => {
       const deadline = Date.now() + timeout;
+      let menuSeen = false;
       while (Date.now() < deadline) {
-        characterLists = [...document.querySelectorAll(listSelector)].filter(visible);
-        if (characterLists.length) return true;
-        if ([...document.querySelectorAll(menuRootSelector)].filter(visible).length > menusBefore) return true;
-        await wait(12);
+        // 開放を待つ間は、開いたポップオーバー内のリストだけを読みます。
+        bestListRead = findBestList(true);
+        if (bestListRead) return true;
+        if (!menuSeen && menuRoots().length > menusBefore) {
+          menuSeen = true;
+          // 枠が出てもリストが遅れて生えることがあるため、待ちを伸ばします。
+          deadline = Math.max(deadline, Date.now() + 500);
+        }
+        await wait(16);
       }
       return false;
     };
+    // すでにメニューが開いているかどうかは、ポップオーバーの紙があるかで判定します。
+    // （他のリストが最初からあると、閉じた状態と見誤るため。）
+    const alreadyOpen = menuRoots().some((root) => root.classList.contains('MuiPopover-paper') || root.classList.contains('MuiMenu-paper'));
     const opened = !alreadyOpen;
     if (opened) {
       const avatar = selector.querySelector('img.MuiAvatar-img');
       if (avatar) avatar.click();
       else selector.click();
-      if (!(await lookForMenu(1000))) {
-        // アバターのクリックで開かない場合は、ボタン自体も試します。
-        log('キャラクター選択メニューが開かないため、ボタン自体をクリックします。');
+      if (!(await lookForMenu(1200))) {
+        // アバターのクリックで開かない場合は、MUIボタン向けの押し方（pointer/mouseイベント付き）で試します。
+        log('キャラクター選択メニューが開かないため、ボタン自体を押し直します。');
         selector.click();
-        if (!(await lookForMenu(600))) {
+        pressElement(selector);
+        if (!(await lookForMenu(700))) {
           log('キャラクター選択メニューを開けませんでした。');
         }
       }
     }
-    const characterList = characterLists.at(-1);
-    if (characterList) {
-      const options = [...characterList.querySelectorAll('.MuiListItemButton-root[role="button"]')]
-        .map((element, index) => {
-          const image = element.querySelector('.MuiListItemAvatar img.MuiAvatar-img');
-          const name = element.querySelector('.MuiListItemText-primary')?.textContent?.trim()
-            || element.getAttribute('aria-label')
-            || normalizedText(element);
-          const state = element.querySelector('.MuiListItemText-secondary')?.textContent?.trim() || '';
-          return { name, key: image?.currentSrc || image?.src || '', state, element, index };
-        })
-        .filter((option) => option.name);
+    if (!(bestListRead ??= findBestList(false))) {
+      // 開いていた（＝lookForMenuを通らなかった）ときも、ここで改めて読みます。
+      log('キャラクター選択メニューのリストを読めませんでした。');
+    }
+    if (bestListRead) {
+      const options = bestListRead.options;
       log(`キャラクター選択メニューから${options.length}件取得しました。`);
       return { selector, options, opened };
     }
 
     log('キャラクター選択メニューのリストを直接読めなかったため、表示中の候補を走査します。');
-    let roots = [...document.querySelectorAll('[role="dialog"], [role="listbox"], [role="menu"], .MuiPopover-root, .MuiMenu-root')]
-      .filter(visible);
-    const root = roots.at(-1);
+    // まず開かれたポップオーバーの紙を対象にします。別のダイアログ等を拾わないためです。
+    const roots = [...document.querySelectorAll(menuRootSelector)].filter(visible);
+    const root = roots.filter((element) => element.classList.contains('MuiPopover-paper') || element.classList.contains('MuiMenu-paper')).at(-1)
+      ?? roots.at(-1);
     const explicitOptions = [...document.querySelectorAll('[role="option"], [role="menuitem"]')].filter(visible);
     const pointerTargets = (scope) => [...scope.querySelectorAll('*')].filter((element) => {
       const style = getComputedStyle(element);
@@ -763,9 +854,16 @@
       .map((element, index) => {
         const image = element.querySelector('img');
         const ownImage = element.matches('img') ? element : null;
-        const name = element.getAttribute('aria-label') || element.getAttribute('title')
+        // こちらの走査でも、一覧側と同じ「半角にそろえた名前」を使って対応関係を作ります。
+        const displayName = element.getAttribute('aria-label') || element.getAttribute('title')
           || image?.alt || ownImage?.alt || normalizedText(element);
-        return { name, key: image?.currentSrc || image?.src || ownImage?.currentSrc || ownImage?.src || '', element, index };
+        return {
+          name: canonicalName(displayName),
+          rawName: displayName,
+          key: image?.currentSrc || image?.src || ownImage?.currentSrc || ownImage?.src || '',
+          element,
+          index
+        };
       })
       .filter((option) => option.name || option.key)
       .filter((option) => option.name.length < 100)
@@ -1024,13 +1122,15 @@
       roomPath: location.pathname,
       tabs,
       messages,
-      speakerName: speaker?.value ?? '',
+      speakerName: canonicalName(speaker?.value ?? ''),
       speakerAvatar: resolveRoomAssetUrl(speakerImage?.currentSrc || speakerImage?.src || ''),
       draftText: findVisibleChatTextarea()?.value ?? '',
       characters,
       diceButtons: [...new Set(diceButtons)]
     };
-    });
+    // キャラクター一覧を読むときは、CCFOLIA側のチャットウィンドウを実際に開きます。
+    // 入力欄が折りたたまれていると選択ボタンが押せず、一覧が空・古いままになるためです。
+    }, includeCharacters ? { forceOpen: true } : undefined);
     cachedChatState = state;
     updateUnreadTracking(state.tabs);
     return attachUnreadTabs(state);
@@ -1145,16 +1245,26 @@
       return left === right;
     }
   };
+  // 名前の対応づけ用に、空白の全角・半角や連続空白の違いを吸収してそろえます。
+  // 選択キャラの一覧は読み込み時に、番号を付ける一覧（HP行からの取得）と同じこの形にします。
+  // （CCFOLIA側へ書き込む発言名は rawName＝原形を使います。）
+  const canonicalName = (value) => String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
 
   const selectChatCharacter = async ({ name, key }) => withChatDrawer(async () => {
     const picker = await getCharacterPickerOptions();
-    const wanted = String(name ?? '').replace(/\s+/g, ' ').trim();
+    const wanted = canonicalName(name);
     // 取得した名前には同名キャラを区別する「（N・一覧M番目）」が付いていることがあり、
     // メニュー側の名前は素の形なので、取り除いた形でも照合します。
     const plainWanted = wanted.replace(/（\d+・一覧\d+番目）$/, '').trim() || wanted;
+    // 選択メニューの名前は読み込み時に半角（canonicalName）にそろっているため、
+    // 番号を付ける一覧やコマンドで使う名前とそのまま対応します。
     const option = picker.options.find((candidate) => (key && sameImage(candidate.key, key))
       || candidate.name === wanted
-      || candidate.name === plainWanted);
+      || candidate.name === plainWanted)
+      ?? picker.options.find((candidate) => canonicalName(candidate.name) === wanted
+        || canonicalName(candidate.name) === plainWanted);
     if (!option) {
       await closeCharacterPicker(picker.selector, picker.opened);
       log(`「${wanted}」がキャラクター選択メニューにありません。表示中の候補: `
@@ -1164,12 +1274,15 @@
     option.element.click();
     await waitFor(() => {
       const input = document.querySelector('input[name="name"][placeholder="noname"]');
-      return input && input.value === option.name ? input : null;
+      return input && canonicalName(input.value) === canonicalName(option.name) ? input : null;
     }, 250);
     const speakerInput = document.querySelector('input[name="name"][placeholder="noname"]');
-    if (speakerInput && option.name) setReactInputValue(speakerInput, option.name);
+    // 発言名欄には、CCFOLIA側の表記そのまま（全角空白を含む原形）を書き込みます。
+    // 対応づけに使う変換後の名前を送信文の名前に書き換えないためです。
+    if (speakerInput && (option.rawName ?? option.name)) setReactInputValue(speakerInput, option.rawName ?? option.name);
     return { ok: true };
-  });
+  // 入力欄が折りたたまれていると選択メニューが押せないため、開いてから操作します。
+  }, { forceOpen: true });
 
   const clickDiceShortcut = ({ label, count }) => {
     const sides = String(label ?? '').match(/^D(2|3|4|6|8|10|12|20|100)$/)?.[1];
@@ -1277,7 +1390,7 @@
     let previousCount = -1;
     let previousHeight = -1;
     let previousTop = -1;
-    for (let pass = 0; pass < 200 && stablePasses < 3; pass += 1) {
+    for (let pass = 0; pass < 200 && stablePasses < 2; pass += 1) {
       const count = collect();
       const height = scrollingElement.scrollHeight;
       const top = Math.round(scrollingElement.scrollTop);
@@ -1297,15 +1410,15 @@
       previousCount = count;
       previousHeight = height;
       previousTop = top;
-      if (stablePasses >= 3) break;
+      if (stablePasses >= 2) break;
       if (atBottom) break;
-      // 非表示タブでは各待ちが約1秒に間引かれるため、1回で大きく進めて往復数を減らします
-      // （待ちが長いぶん表示の描画も追いつくので、大きく進めて安全です）。
-      const step = Math.max(120, scrollingElement.clientHeight * (document.hidden ? 1.6 : 0.7));
+      // 1ステップは描画2フレームぶん（約32ms）。スクロール量は0.9画面ぶんと大きめに進めて
+      // 往復数を減らしつつ、窓が重なる範囲で項目の取りこぼしを防ぎます。
+      const step = Math.max(120, scrollingElement.clientHeight * (document.hidden ? 1.6 : 0.9));
       const maxTop = height - scrollingElement.clientHeight;
       scrollingElement.scrollTop = Math.min(maxTop, scrollingElement.scrollTop + step);
       scrollingElement.dispatchEvent(new Event('scroll', { bubbles: true }));
-      await wait(70);
+      await frameWait();
     }
     // 主候補のほかにスクロール量のある容器（内側のリストなど）があれば、それらも
     // 全部最下部まで送ってから読み直し、シーン・パレットの項目を取りこぼしません。
@@ -1314,7 +1427,7 @@
     for (const candidate of otherScrollables) {
       candidate.scrollTop = candidate.scrollHeight - candidate.clientHeight;
       candidate.dispatchEvent(new Event('scroll', { bubbles: true }));
-      await wait(80);
+      await frameWait();
       collect();
     }
     collect();
@@ -1325,7 +1438,17 @@
       let count = 0;
       // 同名の項目は重複としてまとめず「全部そのまま」残したい場合もあるため、
       // シーン側と同じく配列で保持する（パレット側だけは読みやすさの重複除去）。
-      for (const label of scrollableList.querySelectorAll('.MuiListItemButton-root[role="button"] .MuiListItemText-primary')) {
+      let labels = scrollableList.querySelectorAll('.MuiListItemButton-root[role="button"] .MuiListItemText-primary');
+      if (!labels.length) {
+        // 行の作りが変わってroleが付かなくなった場合（キャラクター選択メニューと同じ変化）も
+        // 読めるよう、ListItemButton系の行から幅広く拾います。
+        labels = scrollableList.querySelectorAll(
+          '.MuiListItemButton-root .MuiListItemText-primary,'
+          + ' [role="option"] .MuiListItemText-primary, [role="menuitem"] .MuiListItemText-primary,'
+          + ' li.MuiListItem-root[role="button"] .MuiListItemText-primary'
+        );
+      }
+      for (const label of labels) {
         count += 1;
         const text = normalizedText(label);
         if (text && !entries.includes(text)) entries.push(text);
@@ -1508,18 +1631,31 @@
     pressElement(button);
     // 外側のラッパはシーン表と違う種類のことがあるので、ダイアログの「中身」で判別します:
     // 名前（MuiListItemText-primary）と固有のトグルボタンが並ぶscrollable-listを拾います。
-    const findDialog = () => [...document.querySelectorAll('.MuiDialogContent-root.scrollable-list')]
-      .filter(visible)
-      .filter(spec.hasRows)
-      .sort((left, right) => left.querySelectorAll('*').length - right.querySelectorAll('*').length)[0] ?? null;
-    let root = await waitFor(findDialog, 5000);
-    if (!root) {
+    // 一覧が空（まだパネルがひとつもない等）のときは行もトグルボタンも生えないため、
+    // 「項目のないscrollable-list」も開いた証拠として受け付けます。そのときは空扱いにします。
+    const findDialog = (acceptEmpty) => {
+      const lists = [...document.querySelectorAll('.MuiDialogContent-root.scrollable-list')].filter(visible);
+      const withRows = lists.filter(spec.hasRows)
+        .sort((left, right) => left.querySelectorAll('*').length - right.querySelectorAll('*').length)[0];
+      if (withRows) return { root: withRows, empty: false };
+      if (!acceptEmpty) return null;
+      const empty = lists.find((list) => {
+        if (list.querySelector('.MuiListItemText-primary')) return false;
+        // 自身のダイアログの見出しに一覧名が載っている、または開いているscrollable-listが
+        // これ1つだけなら、目的の空の一覧と見なします。
+        const wrapper = list.closest('[role="dialog"], .MuiDialog-root, .MuiModal-root, .MuiPaper-root');
+        return (wrapper && (wrapper.textContent ?? '').includes(spec.dialogLabel)) || lists.length === 1;
+      });
+      return empty ? { root: empty, empty: true } : null;
+    };
+    let found = await waitFor(() => findDialog(true), 5000);
+    if (!found) {
       // 最初の押下で開かなかったときは、もう一度だけ押します（1回目のpointerが効かないケースの保険）。
       log(`${spec.dialogLabel}が開かなかったため、もう一度押します。`);
       pressElement(button);
-      root = await waitFor(findDialog, 4000);
+      found = await waitFor(() => findDialog(true), 4000);
     }
-    if (!root) {
+    if (!found) {
       // 切り分け用に、開いてしまったものと参照できる一覧をコンソールに出します。
       const openOverlays = [...document.querySelectorAll('[role="dialog"], .MuiDialog-root, .MuiModal-root')].filter(visible).length;
       const scrollableLists = [...document.querySelectorAll('.MuiDialogContent-root.scrollable-list')]
@@ -1529,7 +1665,7 @@
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       throw new Error(`CCFOLIAの${spec.dialogLabel}を開けられませんでした。CCFOLIAの画面で${spec.dialogLabel}のボタンから開けるか確認してください。`);
     }
-    return root;
+    return found;
   };
 
   // シーン表と同じ手順で閉じます: 「閉じる」ボタン→Escape→外側クリックの順で、消えるまで試します。
@@ -1576,8 +1712,14 @@
   // 行式リストを開いて最下部まで走査し、名前と現在状態（on）を返します。
   const openRowListEntries = async (spec) => {
     log(`${spec.dialogLabel}の取得を開始します。`);
-    const root = await openRowListDialog(spec);
+    const { root, empty } = await openRowListDialog(spec);
     try {
+      if (empty) {
+        // 一覧が空のときは走査せず、すぐに閉じます。
+        // セッションを始めるときに、空の一覧の表で待たされないようにするためです。
+        log(`${spec.dialogLabel}は空でした（0件）。すぐに閉じます。`);
+        return { ok: true, entries: [] };
+      }
       const entries = await readRowListEntries(root, spec);
       const onCount = entries.filter((entry) => entry.on).length;
       log(`${spec.dialogLabel}を${entries.length}件読み取りました（${spec.onCountLabel}のは${onCount}件）。`);
@@ -1596,7 +1738,7 @@
       .filter(Boolean);
     if (!wanted.length) throw new Error('対象の名前がありません。');
     log(`${spec.dialogLabel}から${wanted.length}件の切替を実行します。`);
-    const root = await openRowListDialog(spec);
+    const { root } = await openRowListDialog(spec);
     try {
       const scrollableList = findPaletteDialogScrollableList(root);
       if (!scrollableList) throw new Error(`${spec.dialogLabel}のスクロール領域が見つかりません。`);
@@ -1666,7 +1808,9 @@
       // パレットは発言者（現在のキャラクター）ごとに内容が変わるため、
       // どのキャラクターのパレットかを一緒に返します。
       const speakerInput = document.querySelector('input[name="name"][placeholder="noname"]');
-      const characterName = (speakerInput?.value ?? '').trim();
+      // 誰のパレットかのキーは、選択キャラの一覧と同じ（空白の全角・半角をそろえた）形にします。
+      // 発言名欄の表記（全角空白など）と一覧側の名前の対応が崩れないようにするためです。
+      const characterName = canonicalName(speakerInput?.value ?? '');
       log(`チャットパレット（${characterName || '発言者なし'}）を${entries.length}件読み取りました。`);
       return { ok: true, entries, characterName };
     } finally {
@@ -1707,6 +1851,8 @@
       }
       const again = picker.options.find((candidate) => candidate.name === wanted.name
         && (!wanted.key || sameImage(candidate.key, wanted.key)))
+        ?? picker.options.find((candidate) => canonicalName(candidate.name) === canonicalName(wanted.name)
+          && (!wanted.key || sameImage(candidate.key, wanted.key)))
         ?? options[index];
       if (!again?.element) {
         log(`「${wanted.name}」がメニューから見つからなくなったため、ここで打ち切ります。`);
@@ -1718,7 +1864,7 @@
       // パレットはCCFOLIA側の実際の選択キャラのまま読むため、名前の偽書き換えはしません。
       const applied = await waitFor(() => {
         const input = speakerInput();
-        return input?.value === again.name ? input : null;
+        return input && canonicalName(input.value) === canonicalName(again.name) ? input : null;
       }, 250);
       if (!applied) {
         log(`「${again.name}」への切り替えが発言名に反映されているのを確認できませんでした。`);
