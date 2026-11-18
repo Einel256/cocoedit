@@ -1299,35 +1299,7 @@
     if (!match[2].trim()) return { error: '回数の後に送信するコマンドを入力してください。' };
     return { count, text: match[2].trim() };
   };
-  const isDiceFormula = (formula) => /^(?:\d+)?[dD]\d+(?:[+-](?:(?:\d+)?[dD]\d+|\d+))*$/.test(formula);
-
-  /* エイリアス本文を「;区切りの文」に分けます。
-     if文の {} の中の ; は文の区切りではないため、{} と () の入れ子をたどって分けます。 */
-  const splitAliasStatements = (source) => {
-    const statements = [];
-    let current = '';
-    let braceDepth = 0;
-    let parenDepth = 0;
-    for (const character of source) {
-      if (character === '(') parenDepth += 1;
-      else if (character === ')') parenDepth = Math.max(0, parenDepth - 1);
-      else if (character === '{') braceDepth += 1;
-      else if (character === '}') {
-        braceDepth = Math.max(0, braceDepth - 1);
-        if (braceDepth === 0) {
-          current += character;
-          continue;
-        }
-      } else if (character === ';' && braceDepth === 0 && parenDepth === 0) {
-        if (current.trim()) statements.push(current.trim());
-        current = '';
-        continue;
-      }
-      current += character;
-    }
-    if (current.trim()) statements.push(current.trim());
-    return statements;
-  };
+  /* ===== 関数本文の式（C言語風）===== */
 
   // 対応する閉じ位置（開き文字の位置から）を探します。見つからなければ -1。
   const findMatchingBracket = (source, start, openCharacter, closeCharacter) => {
@@ -1343,70 +1315,97 @@
     return -1;
   };
 
-  /* 「if (条件式) { ... } else { ... }」の形を解析します。if文でなければnull、
-     文法がおかしければErrorを投げます。else に続く「else if (...)」の鎖は、
-     else の中にもう1つのif文（elseSourceがifで始まる）として表します。
-     if（またはelse）の波括弧の直後に文が続くときは、その文を trailing に入れて返します
-     （Cでは if(...){...} の後に「;」なしで文を並べられるため）。 */
-  const parseAliasIf = (statement) => {
-    if (!/^if\b/i.test(statement)) return null;
-    const openParen = statement.indexOf('(');
-    if (openParen < 0) {
-      throw new Error(`if文「${statement}」に条件式がありません。「if (a > 0) { ... }」の形で書いてください。`);
-    }
-    const closeParen = findMatchingBracket(statement, openParen, '(', ')');
-    if (closeParen < 0) throw new Error(`if文「${statement}」の「)」が対応していません。`);
-    const condition = statement.slice(openParen + 1, closeParen).trim();
-    if (!condition) throw new Error(`if文「${statement}」の条件式が空です。`);
-    let rest = statement.slice(closeParen + 1).trim();
-    if (!rest.startsWith('{')) {
-      throw new Error(`if文「${statement}」に「{ 送る内容 }」がありません。空のときは { } とだけ書いてください。`);
-    }
-    const thenClose = findMatchingBracket(rest, 0, '{', '}');
-    if (thenClose < 0) throw new Error(`if文「${statement}」の「}」が対応していません。`);
-    const thenSource = rest.slice(1, thenClose);
-    rest = rest.slice(thenClose + 1).trim();
-    let elseSource = null;
-    let trailing = null;
-    if (rest && /^else\b/i.test(rest)) {
-      const elseBody = rest.replace(/^else\b/i, '').trim();
-      if (/^if\b/i.test(elseBody)) {
-        // else ifの鎖。else の中身として、そのままif文を1つ入れます（trailingはその中で処理）。
-        elseSource = elseBody;
-      } else if (elseBody.startsWith('{')) {
-        const elseClose = findMatchingBracket(elseBody, 0, '{', '}');
-        if (elseClose < 0) throw new Error(`else の「}」が対応していません。`);
-        elseSource = elseBody.slice(1, elseClose);
-        const after = elseBody.slice(elseClose + 1).trim();
-        if (after) {
-          if (/^else\b/i.test(after)) throw new Error(`if文「${statement}」に else が2つあります。`);
-          trailing = after;
-        }
-      } else {
-        throw new Error(`else に「{ 送る内容 }」がありません。空のときは { } とだけ書いてください。`);
-      }
-    } else if (rest) {
-      trailing = rest;
-    }
-    return { condition, thenSource, elseSource, trailing };
+  /* C言語風の式を解析して、評価用の木（AST）にします。
+     使えるのは:
+     - 数値リテラル（3、0.5 など）
+     - ダイス式（1d8、2d6、d20 など。式の評価時に実際にロールして結果を使います）
+     - 判定ロール（1d100<=50 【正気度ロール】 など。評価した時点でCCFOLIAへ送ってロールし、
+       成功・スペシャル・決定的成功なら1、失敗・ファンブルなら0になります）
+     - 関数内変数（int a = ...; で作るもの。文中では a と名前だけで書きます）
+     - 単項演算子: ! ~ - + と、前置・後置の ++ --
+     - 二項演算子: * / %、+ -、<< >>、< > <= >=、== !=、& ^ |、&& ||
+     - 三項演算子: 条件 ? 値1 : 値2
+     - 代入: = += -= *= /= %= &= |= ^= <<= >>=（a = b = 1 のような連鎖も可）
+     優先順位と結合規則はCと同じです。&& と || と ? はCと同じく短絡評価し、
+     比較・論理・!の結果は1か0になります。 */
+  const ALIAS_ASSIGNMENT_OPERATORS = ['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>='];
+  const ALIAS_BINARY_OPERATOR_LEVELS = [
+    ['||'], ['&&'], ['|'], ['^'], ['&'], ['==', '!='], ['<', '>', '<=', '>='], ['<<', '>>'], ['+', '-'], ['*', '/', '%']
+  ];
+  /* ===== 判定ロール（成功・失敗を1/0として使える式の要素）===== */
+
+  /* 式の中に書ける「判定ロール」の形です:
+     1d100<=50 【正気度ロール】   （CCFOLIAのしきい値付きダイス。ラベルは省略可）
+     1d100<={SAN} 【正気度ロール】 （{SAN} はCCFOLIA側で実際の値に置き換わります）
+     1d100<={CON}*5 【CON判定】   （しきい値はCCFOLIAの仕様どおり {param}×数値 の算術も可）
+     (1d100<=50) 【正気度ロール】  （CCFOLIA風のカッコ付きも可）
+     しきい値はダイス式にくっつけて書いてください（1d100<=50）。しきい値の直前に空白を
+     置く（1d100 <= 50）と、ロールした数値としきい値の比較という別の意味になります
+     （数値が相手なら結果の真偽は同じですが、判定ロールにはならず 成功・失敗 は出ません）。 */
+  const ALIAS_JUDGMENT_KEYWORD_PATTERN = '(決定的成功\\s*[／/]\\s*スペシャル|決定的成功|スペシャル|成功|失敗|ファンブル)';
+  const ALIAS_JUDGMENT_SUCCESS_PATTERN = '^(?:成功|スペシャル|決定的成功|決定的成功\\s*[／/]\\s*スペシャル)$';
+  /* しきい値の形: 数値か {param} を1つ以上、掛け算・割り算・足し算・引き算でつなげたもの。
+     全体をカッコで囲む（1d100<=({CON}*5)）ことも許します（CCFOLIAのチャットパレットで
+     よく使われる形）。演算の優先順位はCCFOLIA側で評価されるので、ここでは並びだけ見ます。 */
+  const ALIAS_JUDGMENT_THRESHOLD_PATTERN = '(?:[({]\\s*)?(?:\\d+(?:\\.\\d+)?|\\{[^{}\\n]*\\})(?:\\s*[*/+\\-]\\s*(?:\\d+(?:\\.\\d+)?|\\{[^{}\\n]*\\}))*(?:\\s*[)}])?';
+  const aliasJudgmentRollPattern = new RegExp(
+    `\\(?\\s*(?:\\d+)?[dD]\\d+(?:[+-](?:(?:\\d+)?[dD]\\d+|\\d+))*(?:<=|>=|<>|<|>|=)\\s*${ALIAS_JUDGMENT_THRESHOLD_PATTERN}\\s*\\)?(?:\\s*【[^】]*】)?`,
+    'y'
+  );
+  /* 判定ロールのコマンドから、結果メッセージを探すためのダイス式部分の正規表現を作ります。
+     ラベル（【…】）とカッコは結果の出力に必ずしも残らないため除きます。
+     しきい値はCCFOLIA側でパラメータの置換・計算が済んだ形（{CON}*5 → 12*5 や 60、
+     {SAN} → 68）で結果に出るため、「数値と演算子の並び」として柔軟に読みます。 */
+  const aliasJudgmentCorePattern = (command) => {
+    const core = command.replace(/【[^】]*】/g, ' ').replace(/[()]/g, ' ').trim();
+    const comparator = core.match(/<=|>=|<>|<|>|=/);
+    const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
+    if (!comparator) return escape(core);
+    // 比較演算子より前（ダイスの形）はコマンドどおりに、後ろ（しきい値）は柔軟に一致させます。
+    return `${escape(core.slice(0, comparator.index + comparator[0].length))}\\s*\\d+(?:\\.\\d+)?(?:\\s*[*/+\\-]\\s*\\d+(?:\\.\\d+)?)*`;
+  };
+  /* 結果メッセージから判定語（成功・失敗など）を見つけます。見つかれば成功系は1、
+     失敗系（失敗・ファンブル）は0、見つからなければnullを返します。
+     CCFOLIAは (1d100<=68) ＞ 57 ＞ 成功 のように、ダイス式をカッコで囲んで出力します。 */
+  const aliasJudgmentValueFor = (text, corePattern) => {
+    const match = String(text ?? '').match(new RegExp(
+      `(?:${corePattern}\\s*)?\\(\\s*${corePattern}\\s*\\)[\\s\\S]{0,120}?[＞>][\\s\\S]{0,120}?${ALIAS_JUDGMENT_KEYWORD_PATTERN}`,
+      'i'
+    ));
+    if (!match) return null;
+    return new RegExp(ALIAS_JUDGMENT_SUCCESS_PATTERN).test(match[1]) ? 1 : 0;
   };
 
-  /* C言語風の条件式を評価します。
-     使えるのは !、単項の-、( )、* / %、+ -、> >= < <=、== !=、&&、|| と、
-     数値リテラル・エイリアス変数（int a = 1d8; で作るもの。文中では a と名前だけで書きます）。
-     真偽はCと同じ「0以外が真」です。変数が未決（未定義・ロール待ち）ならErrorを投げます。 */
-  const evaluateAliasCondition = (source, aliasContext) => {
-    const tokenPattern = /\s*(>=|<=|==|!=|&&|\|\||[-+*/%()!<>]|[A-Za-z_]\w*|\d+(?:\.\d+)?)/y;
+  const parseAliasExpression = (source, aliasContext) => {
+    const tokenPattern = /(<<=|>>=|\+\+|--|&&|\|\||<<|>>|<=|>=|==|!=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|[-+*/%()!~<>=&|^?:]|\d+(?:\.\d+)?|[A-Za-z_]\w*)/y;
     const tokens = [];
-    let position = 0;
-    while (position < source.length) {
-      tokenPattern.lastIndex = position;
+    let tokenPosition = 0;
+    for (;;) {
+      while (tokenPosition < source.length && /\s/.test(source[tokenPosition])) tokenPosition += 1;
+      if (tokenPosition >= source.length) break;
+      // しきい値付きダイス（1d100<=50 【正気度ロール】 など）は、他のトークンに
+      // 分解される前に1つの「判定ロール」として読み取ります。
+      aliasJudgmentRollPattern.lastIndex = tokenPosition;
+      const judgmentMatch = aliasJudgmentRollPattern.exec(source);
+      if (judgmentMatch) {
+        // d100 のように個数を書かないダイスは、同名の変数が宣言されていれば変数として扱います。
+        const bareDie = /^(?:\(\s*)?[dD]\d+/.exec(judgmentMatch[0]);
+        const bareName = bareDie ? bareDie[0].replace(/[()\s]/g, '') : null;
+        const bareNameIsVariable = bareName !== null
+          && Object.prototype.hasOwnProperty.call(aliasContext.variables, bareName);
+        if (!bareNameIsVariable) {
+          tokens.push({ judgment: judgmentMatch[0] });
+          tokenPosition += judgmentMatch[0].length;
+          continue;
+        }
+      }
+      tokenPattern.lastIndex = tokenPosition;
       const match = tokenPattern.exec(source);
-      if (!match) throw new Error(`ifの条件式「${source.trim()}」を読み取れません（使えるのは数値・変数名・演算子です）。`);
+      if (!match) throw new Error(`式「${source.trim()}」を読み取れません（使えるのは数値・変数名・ダイス式・判定ロール・演算子です）。`);
       tokens.push(match[1]);
-      position = tokenPattern.lastIndex;
+      tokenPosition = tokenPattern.lastIndex;
     }
-    if (!tokens.length) throw new Error('ifの条件式が空です。');
+    if (!tokens.length) throw new Error('式が空です。');
     let index = 0;
     const peek = () => tokens[index];
     const next = () => {
@@ -1414,210 +1413,578 @@
       index += 1;
       return token;
     };
-    const evaluatePrimary = () => {
-      const token = tokens[index];
-      if (token === undefined) throw new Error('ifの条件式が途中で終わっています。');
-      if (token === '(') {
+    // 代入。Cと同じく右結合で、式の中にも書けます（a = b = 1、if (a = 1) など）。
+    const parseAssignment = () => {
+      const left = parseTernary();
+      const operator = peek();
+      if (ALIAS_ASSIGNMENT_OPERATORS.includes(operator)) {
+        if (left.k !== 'var') throw new Error(`「${operator}」の左辺は変数名にしてください（例: a ${operator} 1）。`);
         index += 1;
-        const value = evaluateOr();
-        if (peek() !== ')') throw new Error(`ifの条件式「${source.trim()}」の「)」が対応していません。`);
-        index += 1;
-        return value;
+        return { k: 'assign', op: operator, name: left.name, value: parseAssignment() };
       }
-      if (token === '-') {
+      return left;
+    };
+    const parseTernary = () => {
+      const condition = parseBinary(0);
+      if (peek() !== '?') return condition;
+      index += 1;
+      const trueValue = parseAssignment();
+      if (peek() !== ':') throw new Error(`三項演算子「?」に対応する「:」がありません（式「${source.trim()}」）。`);
+      index += 1;
+      return { k: 'cond', condition, trueValue, falseValue: parseAssignment() };
+    };
+    // 二項演算子は優先順位の低い層から順に呼びます（Cと同じ）。
+    const parseBinary = (level) => {
+      if (level >= ALIAS_BINARY_OPERATOR_LEVELS.length) return parseUnary();
+      let left = parseBinary(level + 1);
+      while (ALIAS_BINARY_OPERATOR_LEVELS[level].includes(peek())) {
+        const operator = next();
+        left = { k: 'bin', op: operator, a: left, b: parseBinary(level + 1) };
+      }
+      return left;
+    };
+    const parseUnary = () => {
+      const token = peek();
+      if (token === undefined) throw new Error(`式「${source.trim()}」が途中で終わっています。`);
+      if (token === '!' || token === '~' || token === '-') {
         index += 1;
-        return -evaluatePrimary();
+        return { k: 'un', op: token, a: parseUnary() };
       }
       if (token === '+') {
         index += 1;
-        return evaluatePrimary();
+        return parseUnary(); // 単項の+は値を変えません
       }
-      if (token === '!') {
+      if (token === '++' || token === '--') {
         index += 1;
-        return evaluatePrimary() === 0 ? 1 : 0;
+        const target = parseUnary();
+        if (target.k !== 'var') throw new Error(`「${token}」の直後は変数名にしてください（例: ${token}a）。`);
+        return { k: 'pre', op: token, name: target.name };
       }
-      if (/^\d/.test(token)) {
-        index += 1;
-        return Number(token);
-      }
-      if (/^[A-Za-z_]/.test(token)) {
-        index += 1;
-        if (!Object.prototype.hasOwnProperty.call(aliasContext.variables, token)
-          || typeof aliasContext.variables[token] !== 'number') {
-          throw new Error(`変数「${token}」がまだ決まっていないため、ifの条件式を評価できませんでした（未定義・ロール失敗）。先に「int ${token} = 1d8;」と書くか、送り直してください。`);
-        }
-        return aliasContext.variables[token];
-      }
-      throw new Error(`ifの条件式で「${token}」を読み取れません。数値・変数名・演算子だけが使えます。`);
+      return parsePostfix();
     };
-    // 二項演算子を1つ適用します（Cと同じ意味。比較・論理も数値1/0で返します）。
-    const applyBinaryOperator = (operator, left, right) => {
-      if (operator === '*') return left * right;
-      if (operator === '/') return left / right;
-      if (operator === '%') return left % right;
-      if (operator === '+') return left + right;
-      if (operator === '-') return left - right;
-      if (operator === '>') return Number(left > right);
-      if (operator === '<') return Number(left < right);
-      if (operator === '>=') return Number(left >= right);
-      if (operator === '<=') return Number(left <= right);
-      if (operator === '==') return Number(left === right);
-      if (operator === '!=') return Number(left !== right);
-      if (operator === '&&') return Number(left !== 0 && right !== 0);
-      return Number(left !== 0 || right !== 0); // ||
-    };
-    const evaluateBinary = (nextLevel, operators) => {
-      let value = nextLevel();
-      while (operators.includes(peek())) {
+    const parsePostfix = () => {
+      let node = parsePrimary();
+      while (peek() === '++' || peek() === '--') {
         const operator = next();
-        value = applyBinaryOperator(operator, value, nextLevel());
+        if (node.k !== 'var') throw new Error(`「${operator}」を付けられるのは変数名だけです。`);
+        node = { k: 'post', op: operator, name: node.name };
       }
-      return value;
+      return node;
     };
-    // 優先順位の低い層から順に呼びます（Cと同じ: || < && < == != < < > <= >= < + - < * / %）。
-    const evaluateMultiplicative = () => evaluateBinary(evaluatePrimary, ['*', '/', '%']);
-    const evaluateAdditive = () => evaluateBinary(evaluateMultiplicative, ['+', '-']);
-    const evaluateRelational = () => evaluateBinary(evaluateAdditive, ['>=', '<=', '>', '<']);
-    const evaluateEquality = () => evaluateBinary(evaluateRelational, ['==', '!=']);
-    const evaluateAnd = () => evaluateBinary(evaluateEquality, ['&&']);
-    const evaluateOr = () => evaluateBinary(evaluateAnd, ['||']);
-    const result = evaluateOr();
+    const parsePrimary = () => {
+      const token = next();
+      if (token === undefined) throw new Error(`式「${source.trim()}」が途中で終わっています。`);
+      if (typeof token === 'object') {
+        // 判定ロール（1d100<=50 【正気度ロール】 など）。評価時に成功/失敗が1/0になります。
+        return { k: 'judgment', command: token.judgment };
+      }
+      if (token === '(') {
+        const value = parseAssignment();
+        if (peek() !== ')') throw new Error(`式「${source.trim()}」の「)」が対応していません。`);
+        index += 1;
+        return value;
+      }
+      if (/^\d+$/.test(token)) {
+        // 数値の直後に d<面数> が続けばダイス式として扱います（例: 2d6）。
+        if (/^[dD]\d+$/.test(peek() ?? '')) {
+          return { k: 'dice', count: Number(token), sides: Number(next().slice(1)) };
+        }
+        return { k: 'num', value: Number(token) };
+      }
+      if (/^\d/.test(token)) return { k: 'num', value: Number(token) };
+      if (/^[A-Za-z_]/.test(token)) {
+        // d20 のような「個数省略」のダイス。同名の変数が宣言されていればそちらを優先します。
+        if (/^[dD]\d+$/.test(token)
+          && !Object.prototype.hasOwnProperty.call(aliasContext.variables, token)
+          && !aliasContext.failedVariables.has(token)) {
+          return { k: 'dice', count: 1, sides: Number(token.slice(1)) };
+        }
+        return { k: 'var', name: token };
+      }
+      throw new Error(`式「${source.trim()}」で「${token}」を読み取れません。数値・変数名・ダイス式・演算子だけが使えます。`);
+    };
+    const result = parseAssignment();
     if (index < tokens.length) {
-      throw new Error(`ifの条件式「${source.trim()}」に使えない要素が混ざっています。`);
+      throw new Error(`式「${source.trim()}」に使えない要素が混ざっています（「${tokens[index]}」のあたり）。`);
     }
-    return result !== 0;
+    return result;
   };
-  /* 関数本文（if文・変数定義・/s・/t /c /f・n:文面・#delay・送文）を、
-     送信キューに入れるメッセージの並びへ組み立てます。if文はここでは評価せず、
-     分岐の中身を先に組み立てたaliasIfメッセージとして並べ、送信時に評価して
-     当てはまる側をキューの先頭へ差し込めます。文法エラーは error に入れて返します。 */
-  const compileAliasStatements = (source, { aliasContext, depth }) => {
-    const messages = [];
-    let delayBeforeNext = 0;
-    let hasPendingDelay = false;
-    // 文を1つ処理します（if文の波括弧の後に文が続くときは、その文をtrailingとして
-    // 再帰的に処理します）。エラーのときはメッセージ文字列を返します。
-    const processStatement = (statement) => {
+
+  /* Cと同じ意味での二項演算です。比較・論理は1か0を返します。
+     int同士の割り算はCと同じく小数点以下を切り捨て、小数が混ざるときはそのまま割ります。
+     剰余はJSもC99も被除数の符号に従うので、そのまま使います。
+     && と || は短絡評価のため evaluateAliasExpression の側で処理します。 */
+  const applyAliasBinaryOperator = (operator, left, right) => {
+    switch (operator) {
+      case '+': return left + right;
+      case '-': return left - right;
+      case '*': return left * right;
+      case '/':
+        return Number.isInteger(left) && Number.isInteger(right) && right !== 0
+          ? Math.trunc(left / right)
+          : left / right;
+      case '%': return left % right;
+      case '<<': return left << right;
+      case '>>': return left >> right;
+      case '<': return Number(left < right);
+      case '>': return Number(left > right);
+      case '<=': return Number(left <= right);
+      case '>=': return Number(left >= right);
+      case '==': return Number(left === right);
+      case '!=': return Number(left !== right);
+      case '&': return left & right;
+      case '^': return left ^ right;
+      case '|': return left | right;
+      default: throw new Error(`演算子「${operator}」は式の評価に使えません。`);
+    }
+  };
+
+  /* 式の木（AST）を評価します。ダイス式が出てくると rollDice で、判定ロールが出てくると
+     rollJudgment で、実際にロールして結果を待つので、評価は非同期です。
+     && と || と三項演算子はCと同じく、値が決まる側だけを評価します（短絡評価。ロールも
+     要らない側では行いません）。 */
+  const evaluateAliasExpression = async (node, aliasContext, rollDice, rollJudgment) => {
+    const readVariable = (name) => {
+      if (!Object.prototype.hasOwnProperty.call(aliasContext.variables, name)
+        || typeof aliasContext.variables[name] !== 'number') {
+        throw new Error(`変数「${name}」がまだ決まっていないため、式を評価できませんでした（未定義・ロール失敗）。先に「int ${name} = ...;」と書くか、送り直してください。`);
+      }
+      return aliasContext.variables[name];
+    };
+    switch (node.k) {
+      case 'num': return node.value;
+      case 'dice': return await rollDice(node.count, node.sides);
+      case 'judgment': return await rollJudgment(node.command);
+      case 'var': return readVariable(node.name);
+      case 'un': {
+        const value = await evaluateAliasExpression(node.a, aliasContext, rollDice, rollJudgment);
+        if (node.op === '!') return value === 0 ? 1 : 0;
+        if (node.op === '~') return ~value;
+        return -value;
+      }
+      case 'pre': {
+        const current = readVariable(node.name);
+        const value = node.op === '++' ? current + 1 : current - 1;
+        aliasContext.variables[node.name] = value;
+        return value;
+      }
+      case 'post': {
+        const current = readVariable(node.name);
+        aliasContext.variables[node.name] = node.op === '++' ? current + 1 : current - 1;
+        return current;
+      }
+      case 'bin': {
+        if (node.op === '&&') {
+          if ((await evaluateAliasExpression(node.a, aliasContext, rollDice, rollJudgment)) === 0) return 0;
+          return (await evaluateAliasExpression(node.b, aliasContext, rollDice, rollJudgment)) !== 0 ? 1 : 0;
+        }
+        if (node.op === '||') {
+          if ((await evaluateAliasExpression(node.a, aliasContext, rollDice, rollJudgment)) !== 0) return 1;
+          return (await evaluateAliasExpression(node.b, aliasContext, rollDice, rollJudgment)) !== 0 ? 1 : 0;
+        }
+        const left = await evaluateAliasExpression(node.a, aliasContext, rollDice, rollJudgment);
+        const right = await evaluateAliasExpression(node.b, aliasContext, rollDice, rollJudgment);
+        return applyAliasBinaryOperator(node.op, left, right);
+      }
+      case 'cond':
+        return await evaluateAliasExpression(
+          (await evaluateAliasExpression(node.condition, aliasContext, rollDice, rollJudgment)) !== 0
+            ? node.trueValue
+            : node.falseValue,
+          aliasContext,
+          rollDice,
+          rollJudgment
+        );
+      case 'assign': {
+        if (!node.declares
+          && !Object.prototype.hasOwnProperty.call(aliasContext.variables, node.name)) {
+          throw new Error(`変数「${node.name}」は宣言されていません。先に「int ${node.name};」または「int ${node.name} = ...;」と書いてください。`);
+        }
+        const current = aliasContext.variables[node.name];
+        let value;
+        if (node.op === '=') value = await evaluateAliasExpression(node.value, aliasContext, rollDice, rollJudgment);
+        else if (node.op === '++') value = current + 1;
+        else if (node.op === '--') value = current - 1;
+        else {
+          value = applyAliasBinaryOperator(node.op.slice(0, -1), current,
+            await evaluateAliasExpression(node.value, aliasContext, rollDice, rollJudgment));
+        }
+        aliasContext.variables[node.name] = value;
+        return value;
+      }
+      default: throw new Error('式の評価中に不明な要素が出ました。');
+    }
+  };
+  const evaluateAliasExpressionText = async (source, aliasContext, rollDice, rollJudgment) =>
+    evaluateAliasExpression(parseAliasExpression(source, aliasContext), aliasContext, rollDice, rollJudgment);
+  /* 代入（assign）を評価して変数へ代入します。代入した値を返します。
+     複合代入（+= など）は左辺の現在値に演算子を適用し、++ -- は1を足す・引きます。 */
+  const evaluateAliasAssignment = async (assign, aliasContext, rollDice, rollJudgment) =>
+    evaluateAliasExpression({
+      k: 'assign',
+      op: assign.op,
+      name: assign.name,
+      declares: assign.declares === true,
+      value: assign.expression === null ? null : parseAliasExpression(assign.expression, aliasContext)
+    }, aliasContext, rollDice, rollJudgment);
+
+  /* ===== 関数本文の文（C言語風）===== */
+
+  /* ===== while文（ループ）===== */
+
+  /* while文は送信キューに乗った時点で条件を評価し、真の間「本体の文＋while自身
+     （本体の後で条件をもう一度評価するためのwhile）」をキューの先頭へ差し戻す方式です。
+     無限ループを防ぐため、1つのwhileの繰り返しは上限回数で打ち切ります。 */
+  const ALIAS_WHILE_ITERATION_LIMIT = 1000;
+  // break・continueがどのwhileに対応するか（Cと同じく最も内側のwhile）を解析時に取るための状態。
+  let aliasLoopSequence = 0;
+  const aliasLoopStack = [];
+  /* 条件が真のとき、キューへ差し戻すメッセージ列（本体の複製＋再評価用のwhile自身）を作ります。
+     本体のメッセージはテンプレートを壊さないよう複製し、while自身は評価済みの遅延と
+     実行回数を引き継いで新しく作ります。 */
+  const aliasWhileSplice = (message) => {
+    const iterations = (message.aliasWhile.iterations ?? 0) + 1;
+    if (iterations > ALIAS_WHILE_ITERATION_LIMIT) {
+      return { error: `while文が${ALIAS_WHILE_ITERATION_LIMIT}回を超えて繰り返されたため、中止しました。無限ループになっていないか確認してください。` };
+    }
+    return {
+      messages: [
+        ...message.aliasWhile.bodyMessages.map((child) => ({ ...child })),
+        { ...message, delayBefore: 0, aliasWhile: { ...message.aliasWhile, iterations } }
+      ]
+    };
+  };
+  /* break文: それより後の本体の文と、本体の後に並び直ったwhile自身をキューから取り除きます
+     （while自身はloopIdでどのwhileのものか分かります）。 */
+  const skipAliasBreakMessages = (pendingMessages, loopId) => {
+    while (pendingMessages.length
+      && (pendingMessages[0].loopId === loopId
+        || pendingMessages[0].aliasWhile?.loopId === loopId)) {
+      pendingMessages.shift();
+    }
+  };
+  /* continue文: それより後の本体の文だけを取り除き、while自身（条件の再評価）は残します。 */
+  const skipAliasContinueMessages = (pendingMessages, loopId) => {
+    while (pendingMessages.length
+      && !pendingMessages[0].aliasWhile
+      && pendingMessages[0].loopId === loopId) {
+      pendingMessages.shift();
+    }
+  };
+  /* 本体のメッセージ（ifの分岐の中も含む）に、どのwhileの本体かを示すloopIdを付けます。
+     すでに内側のwhileが付けたloopIdは書き換えません（breakは最も内側のwhileに対応）。 */
+  const tagAliasLoopMessages = (messages, loopId) => {
+    for (const message of messages) {
+      if (message.loopId === undefined) message.loopId = loopId;
+      if (message.aliasIf) {
+        tagAliasLoopMessages(message.aliasIf.thenMessages ?? [], loopId);
+        tagAliasLoopMessages(message.aliasIf.elseMessages ?? [], loopId);
+      }
+    }
+  };
+
+  /* 文の並び（関数本文・波括弧ブロックの中身）を解析します。
+     戻り値は { messages, delayBeforeNext, hasPendingDelay } で、呼び出し側は
+     messages をキューに入れます。initialDelay・initialPending は、波括弧ブロックの
+     直前に書かれていた #delay をブロックの中の最初の文へ引き継ぐために渡します。
+     stopBeforeElse は波括弧のないifの本体用で、文の途中に else が来たらそこで
+     文を切り上げます（Cでは ; が必要ですが、このアプリではなくても続けられるようにします）。 */
+  const parseAliasStatementList = (source, { aliasContext, depth, initialDelay = 0, initialPending = false }) => {
+    let messages = [];
+    let delayBeforeNext = initialDelay;
+    let hasPendingDelay = initialPending;
+    let position = 0;
+    const skipSpaces = () => {
+      while (position < source.length && /\s/.test(source[position])) position += 1;
+    };
+    const pushMessage = (message) => {
+      // 直前に #delay があれば、その待ち時間をこの文の直前に付けます。
+      if (delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
+      messages.push(message);
+      delayBeforeNext = 0;
+      hasPendingDelay = false;
+    };
+    // 深さ0の「;」までを1文として読みます（{ } ( ) の中の「;」は文の区切りにしません）。
+    // 戻り値は読み取った文（前後の空白を除く）。「;」が見つからなければ残り全部です。
+    const readPlainStatement = (stopBeforeElse) => {
+      const start = position;
+      let braceDepth = 0;
+      let parenDepth = 0;
+      let terminated = false;
+      while (position < source.length) {
+        const character = source[position];
+        if (stopBeforeElse && braceDepth === 0 && parenDepth === 0
+          && (position === start || /\s/.test(source[position - 1]))
+          && /^else\b(?=[\s({]|$)/i.test(source.slice(position, position + 10))) {
+          break; // elseの手前で切り上げます（ifの本体を解析しているとき）
+        }
+        if (character === '(') parenDepth += 1;
+        else if (character === ')') parenDepth = Math.max(0, parenDepth - 1);
+        else if (character === '{') braceDepth += 1;
+        else if (character === '}') {
+          braceDepth = Math.max(0, braceDepth - 1);
+          if (braceDepth === 0) {
+            position += 1;
+            continue;
+          }
+        } else if (character === ';' && braceDepth === 0 && parenDepth === 0) {
+          position += 1;
+          terminated = true;
+          break;
+        }
+        position += 1;
+      }
+      const end = terminated ? position - 1 : position;
+      return source.slice(start, end).trim();
+    };
+    // 文を1つ解析して、この文列（messages・delayBeforeNext・hasPendingDelay）へ追加します。
+    const parseOneStatement = (allowElseStop) => {
+      skipSpaces();
+      const rest = source.slice(position);
+      if (!rest) return;
+      // 波括弧ブロック。中身を独立した解析にまかせて、メッセージと遅延状態を引き継ぎます。
+      if (rest.startsWith('{')) {
+        const close = findMatchingBracket(source, position, '{', '}');
+        if (close < 0) throw new Error('「{」に対応する「}」がありません。');
+        const inner = source.slice(position + 1, close);
+        position = close + 1;
+        const block = parseAliasStatementList(inner, {
+          aliasContext,
+          depth,
+          initialDelay: delayBeforeNext,
+          initialPending: hasPendingDelay
+        });
+        messages.push(...block.messages);
+        delayBeforeNext = block.delayBeforeNext;
+        hasPendingDelay = block.hasPendingDelay;
+        return;
+      }
+      // if構文（C言語風の条件式）。else ifの鎖も、elseの本体がif文になることで処理します。
+      if (/^if\b/i.test(rest)) {
+        parseIfStatement();
+        return;
+      }
+      // while構文（C言語風の条件式）。送信時に条件を評価して本体を差し込みます。
+      if (/^while\b/i.test(rest)) {
+        parseWhileStatement();
+        return;
+      }
+      if (/^else\b/i.test(rest)) throw new Error('対応するifのないelseがあります。');
+      dispatchPlainStatement(readPlainStatement(allowElseStop));
+    };
+    // 「if」以外の文（#delay・int・代入・コマンド・文面）を、読み取った1文から判定します。
+    const dispatchPlainStatement = (statement) => {
+      if (!statement) return; // 空文（「;;」など）は読み飛ばします
+      // ループの脱出・繰り返し（Cと同じく最も内側のwhileに対応します）。
+      if (/^break$/i.test(statement) || /^continue$/i.test(statement)) {
+        const loopId = aliasLoopStack[aliasLoopStack.length - 1];
+        if (loopId === undefined) {
+          throw new Error(`対応するwhileのない「${statement}」があります。break・continueはwhileの中で使ってください。`);
+        }
+        pushMessage(statement.match(/^break$/i)
+          ? { aliasBreak: loopId, aliasContext, historyText: statement }
+          : { aliasContinue: loopId, aliasContext, historyText: statement });
+        return;
+      }
       if (/^#delay\b/i.test(statement)) {
         const match = statement.match(/^#delay\s+(\d+(?:\.\d+)?|\.\d+)$/i);
         const seconds = match ? Number(match[1]) : NaN;
         if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
-          return '遅延指定は「#delay 0.8」の形式で、0〜86400秒を指定してください。';
+          throw new Error('遅延指定は「#delay 0.8」の形式で、0〜86400秒を指定してください。');
         }
         delayBeforeNext = seconds * 1000;
         hasPendingDelay = true;
-        return null;
+        return;
       }
+      // 変数宣言。右辺の式が使えます（ダイス式も含む）。右辺なしの「int a;」は0で初期化します。
       if (/^int\b/i.test(statement)) {
-        const declaration = statement.match(/^int\s+([A-Za-z_]\w*)\s*=\s*(.+)$/i);
-        if (!declaration) {
-          return `変数定義「${statement}」を読み取れません。例: int a = 1d8;`;
+        const declaration = statement.match(/^int\s+([A-Za-z_]\w*)\s*(?:=\s*([\s\S]+))?$/i);
+        if (!declaration) throw new Error(`変数定義「${statement}」を読み取れません。例: int a = 1d8;`);
+        const [, variableName, expression] = declaration;
+        if (expression === undefined) {
+          aliasContext.variables[variableName] = 0;
+          aliasContext.failedVariables.delete(variableName);
+          return;
         }
-        const [, variableName, formula] = declaration;
-        if (!isDiceFormula(formula.trim())) {
-          return `変数「${variableName}」にはダイス式を指定してください（例: int ${variableName} = 1d8;）。`;
-        }
-        const message = {
-          rollFormula: formula.trim(),
-          variableName,
-          aliasContext,
-          historyText: statement
-        };
-        if (delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
-        messages.push(message);
-        delayBeforeNext = 0;
-        hasPendingDelay = false;
-        return null;
+        const expressionText = expression.trim();
+        if (!expressionText) throw new Error(`変数「${variableName}」への代入「${statement}」の右辺が空です。`);
+        parseAliasExpression(expressionText, aliasContext); // 文法だけここで確かめます
+        // 宣言を兼ねる代入なので、送信時に変数を新しく作れます（declares）。
+        pushMessage({ assign: { name: variableName, op: '=', expression: expressionText, declares: true }, aliasContext, historyText: statement });
+        return;
       }
-      // if構文（C言語風の条件式）。文法エラーはエイリアスの実行を中断します。
-      let parsedIf = null;
-      try {
-        parsedIf = parseAliasIf(statement);
-      } catch (reason) {
-        return reason.message;
+      // 代入・複合代入（a = 式; a += 式; など）。宣言済みの変数に代入できます。
+      // 「x == 1」のような比較を代入と誤認しないよう、演算子の直後に「=」が来ない形だけ受け付けます。
+      const assignment = statement.match(/^([A-Za-z_]\w*)\s*((?:<<=|>>=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|=)(?!=))\s*([\s\S]+)$/);
+      if (assignment) {
+        const [, variableName, operator, expression] = assignment;
+        const expressionText = expression.trim();
+        if (!expressionText) throw new Error(`変数「${variableName}」への代入「${statement}」の右辺が空です。`);
+        parseAliasExpression(expressionText, aliasContext);
+        pushMessage({ assign: { name: variableName, op: operator, expression: expressionText }, aliasContext, historyText: statement });
+        return;
       }
-      if (parsedIf) {
-        const thenCompiled = compileAliasStatements(parsedIf.thenSource, { aliasContext, depth });
-        if (thenCompiled.error) return thenCompiled.error;
-        const elseCompiled = parsedIf.elseSource === null
-          ? { messages: [] }
-          : compileAliasStatements(parsedIf.elseSource, { aliasContext, depth });
-        if (elseCompiled.error) return elseCompiled.error;
-        // 分岐の中身末尾に「#delay」だけ置き去りの場合も文法エラーにします。
-        if (thenCompiled.hasPendingDelay || elseCompiled.hasPendingDelay) {
-          return '遅延指定の後に送信する内容を入力してください。';
-        }
-        const message = {
-          aliasIf: {
-            condition: parsedIf.condition,
-            thenMessages: thenCompiled.messages,
-            elseMessages: elseCompiled.messages,
-            aliasContext
-          },
-          aliasContext,
-          historyText: statement
-        };
-        if (delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
-        messages.push(message);
-        delayBeforeNext = 0;
-        hasPendingDelay = false;
-        // if文の波括弧の直後に文が続くときは、その文も続けて処理します（Cと同じく「;」なしで文を並べられます）。
-        if (parsedIf.trailing) return processStatement(parsedIf.trailing);
-        return null;
+      // インクリメント・デクリメント（a++; ++a; など）。
+      const increment = statement.match(/^(?:\+\+|--)\s*([A-Za-z_]\w*)$|^([A-Za-z_]\w*)\s*(?:\+\+|--)$/);
+      if (increment) {
+        const variableName = increment[1] ?? increment[2];
+        const operator = increment[1] !== undefined ? statement.slice(0, 2) : statement.slice(-2);
+        pushMessage({ assign: { name: variableName, op: operator, expression: null }, aliasContext, historyText: statement });
+        return;
       }
+      // シーン切り替え（/s2）。/sceneコマンドはそのままCCFOLIAへ送ります。
       const sceneCommand = statement.match(/^\/s(\d+)$/i);
       if (sceneCommand && !/^\/scene(?:\s|$)/i.test(statement)) {
-        const message = { sceneQuery: sceneCommand[1], aliasContext };
-        if (delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
-        messages.push(message);
-      } else {
-        const aliasCommand = statement.match(/^\/([ctaf])(?:\s+(.*)|([^\s].*))?$/i);
-        if (aliasCommand) {
-          const message = {
-            aliasCommand: aliasCommand[1].toLowerCase() === 'f' ? 'a' : aliasCommand[1].toLowerCase(),
-            commandQuery: (aliasCommand[2] ?? aliasCommand[3] ?? '').trim(),
-            compactCommand: Boolean(aliasCommand[3]),
-            commandText: statement,
-            aliasContext,
-            aliasDepth: depth
-          };
-          if (delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
-          messages.push(message);
-          delayBeforeNext = 0;
-          hasPendingDelay = false;
-          return null;
-        }
-        const repeated = parseRepeatCommand(statement);
-        if (repeated?.error) {
-          return repeated.error;
-        }
-        if (repeated) {
-          for (let repeatIndex = 0; repeatIndex < repeated.count; repeatIndex += 1) {
-            const message = {
-              text: repeated.text,
-              historyText: statement,
-              aliasContext
-            };
-            if (repeatIndex === 0 && delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
-            messages.push(message);
-          }
-        } else {
-          const message = { text: statement, aliasContext };
-          if (delayBeforeNext > 0) message.delayBefore = delayBeforeNext;
-          messages.push(message);
-        }
+        pushMessage({ sceneQuery: sceneCommand[1], aliasContext });
+        return;
       }
+      // キャラクター・タブ・関数の切り替え（/c /t /f、以前の/aも互換で使えます）。
+      const aliasCommand = statement.match(/^\/([ctaf])(?:\s+(.*)|([^\s].*))?$/i);
+      if (aliasCommand) {
+        pushMessage({
+          aliasCommand: aliasCommand[1].toLowerCase() === 'f' ? 'a' : aliasCommand[1].toLowerCase(),
+          commandQuery: (aliasCommand[2] ?? aliasCommand[3] ?? '').trim(),
+          compactCommand: Boolean(aliasCommand[3]),
+          commandText: statement,
+          aliasContext,
+          aliasDepth: depth
+        });
+        return;
+      }
+      // n:文面（3:こんにちは; など）は、文面をn回ずつ送ります。
+      const repeated = parseRepeatCommand(statement);
+      if (repeated?.error) throw new Error(repeated.error);
+      if (repeated) {
+        for (let repeatIndex = 0; repeatIndex < repeated.count; repeatIndex += 1) {
+          pushMessage({ text: repeated.text, historyText: statement, aliasContext });
+        }
+        return;
+      }
+      // それ以外は、そのまま送る文面として扱います。
+      pushMessage({ text: statement, aliasContext });
+    };
+    /* if文を解析します。「if (条件式) 本体 else 本体」の形で、本体は
+       { 文の並び } でも、波括弧を付けずに1文だけでも書けます（Cと同じ）。
+       本体は送信時に評価して差し込めるよう、独立したメッセージ列に組み立てます。 */
+    const parseIfStatement = () => {
+      const ifPosition = position;
+      const excerpt = () => {
+        const text = source.slice(ifPosition).trim();
+        return text.length > 60 ? `${text.slice(0, 60)}…` : text;
+      };
+      position += 2; // 「if」を読み飛ばします
+      skipSpaces();
+      if (source[position] !== '(') {
+        throw new Error(`if文「${excerpt()}」に条件式がありません。「if (a > 0) { ... }」の形で書いてください。`);
+      }
+      const closeParen = findMatchingBracket(source, position, '(', ')');
+      if (closeParen < 0) throw new Error(`if文「${excerpt()}」の「)」が対応していません。`);
+      const condition = source.slice(position + 1, closeParen).trim();
+      if (!condition) throw new Error(`if文「${excerpt()}」の条件式が空です。`);
+      position = closeParen + 1;
+      // 本体はifの中なので、文面文の途中に「else」が来たらそこで切り上げられるようにします。
+      const thenMessages = parseIfBody();
+      skipSpaces();
+      let elseMessages = null;
+      if (/^else\b/i.test(source.slice(position))) {
+        position += 4; // 「else」を読み飛ばします
+        skipSpaces();
+        // elseの直後がifなら、parseIfStatementがもう1つのif文として解析します（else ifの鎖）。
+        elseMessages = parseIfBody();
+      }
+      pushMessage({ aliasIf: { condition, thenMessages, elseMessages, aliasContext }, aliasContext, historyText: source.slice(ifPosition, position).trim() });
+    };
+    const parseIfBody = () => {
+      skipSpaces();
+      if (source[position] === '{') {
+        const close = findMatchingBracket(source, position, '{', '}');
+        if (close < 0) throw new Error('ifの「{」に対応する「}」がありません。');
+        const inner = source.slice(position + 1, close);
+        position = close + 1;
+        const body = parseAliasStatementList(inner, { aliasContext, depth });
+        if (body.hasPendingDelay) throw new Error('遅延指定の後に送信する内容を入力してください。');
+        return body.messages;
+      }
+      // 波括弧なし: 1文だけを本体にします（「;」があれば文の終わりとして読み込みます）。
+      return parseIsolatedStatement(true);
+    };
+    /* while文を解析します。「while (条件式) 本体」の形で、本体は
+       { 文の並び } でも、波括弧を付けずに1文だけでも書けます（ifと同じ）。
+       本体は送信時に条件が真のたびに差し込めるよう、独立したメッセージ列に組み立てます。 */
+    const parseWhileStatement = () => {
+      const whilePosition = position;
+      const excerpt = () => {
+        const text = source.slice(whilePosition).trim();
+        return text.length > 60 ? `${text.slice(0, 60)}…` : text;
+      };
+      position += 5; // 「while」を読み飛ばします
+      skipSpaces();
+      if (source[position] !== '(') {
+        throw new Error(`while文「${excerpt()}」に条件式がありません。「while (i < 3) { ... }」の形で書いてください。`);
+      }
+      const closeParen = findMatchingBracket(source, position, '(', ')');
+      if (closeParen < 0) throw new Error(`while文「${excerpt()}」の「)」が対応していません。`);
+      const condition = source.slice(position + 1, closeParen).trim();
+      if (!condition) throw new Error(`while文「${excerpt()}」の条件式が空です。`);
+      position = closeParen + 1;
+      parseAliasExpression(condition, aliasContext); // 文法だけここで確かめます
+      // break・continueはこのwhile（最も内側）に対応します。本体の解析でエラーが出ても
+      // 対応を取り消すため、try/finallyで退避します。
+      const loopId = ++aliasLoopSequence;
+      aliasLoopStack.push(loopId);
+      let bodyMessages;
+      try {
+        bodyMessages = parseIfBody();
+      } finally {
+        aliasLoopStack.pop();
+      }
+      tagAliasLoopMessages(bodyMessages, loopId);
+      pushMessage({
+        aliasWhile: { condition, bodyMessages, loopId, aliasContext },
+        aliasContext,
+        historyText: source.slice(whilePosition, position).trim()
+      });
+    };
+    /* 文を1つだけ、独立したメッセージ列として解析します（波括弧のないifの本体用）。
+       終わりまでの遅延指定が余ったら、ifの分岐先が空になってしまうので文法エラーにします。 */
+    const parseIsolatedStatement = (allowElseStop) => {
+      const savedMessages = messages;
+      const savedDelay = delayBeforeNext;
+      const savedPending = hasPendingDelay;
+      messages = [];
       delayBeforeNext = 0;
       hasPendingDelay = false;
-      return null;
+      parseOneStatement(allowElseStop);
+      const isolatedMessages = messages;
+      const isolatedPending = hasPendingDelay;
+      messages = savedMessages;
+      delayBeforeNext = savedDelay;
+      hasPendingDelay = savedPending;
+      if (isolatedPending) throw new Error('遅延指定の後に送信する内容を入力してください。');
+      return isolatedMessages;
     };
-    for (const statement of splitAliasStatements(source)) {
-      const error = processStatement(statement);
-      if (error) return { error };
+    for (;;) {
+      skipSpaces();
+      if (position >= source.length) break;
+      parseOneStatement(false);
     }
-    return { messages, hasPendingDelay };
+    return { messages, delayBeforeNext, hasPendingDelay };
   };
 
+  /* 関数本文（if文・変数定義・代入・/s・/t /c /f・n:文面・#delay・送文）を、
+     送信キューに入れるメッセージの並びへ組み立てます。if文はここでは評価せず、
+     分岐の中身を先に組み立てたaliasIfメッセージとして並べ、送信時に評価して
+     当てはまる側をキューの先頭へ差し込めます。代入・int宣言の右辺の式も、
+     送信時に評価します（ダイス式を含む式はその場でロールします）。
+     文法エラーは error に入れて返します。 */
+  const compileAliasStatements = (source, { aliasContext, depth }) => {
+    try {
+      const parsed = parseAliasStatementList(source, { aliasContext, depth });
+      return { messages: parsed.messages, hasPendingDelay: parsed.hasPendingDelay };
+    } catch (reason) {
+      return { error: reason instanceof Error ? reason.message : String(reason) };
+    }
+  };
   const runAliasEntry = (index, { front = false, depth = 0, nested = false } = {}) => {
     const entry = aliasEntries[index];
     if (!entry) return;
@@ -2430,6 +2797,40 @@
     }
     throw new Error(`ダイス「${formula}」の結果を30秒以内に確認できませんでした。`);
   };
+  /* 式の評価に出てきたダイス（1d8 など）を、実際にCCFOLIAへロール送信して結果を返します。
+     結果の取りこぼしを防ぐため、送信の直前のチャット状態を「前のメッセージ」として覚えておきます。 */
+  const rollAliasDiceTerm = async (count, sides) => {
+    const formula = `${count}d${sides}`;
+    const previousSignatures = new Set((latestChatState?.messages ?? []).map(messageSignature));
+    await sendRequest('CCFOLIA_CHAT_SEND', { text: formula });
+    const value = await waitForDiceResult(formula, previousSignatures);
+    chatStatus.textContent = `ダイス「${formula}」を式の評価に使いました（結果 ${value}）。`;
+    return value;
+  };
+  /* 式の評価に出てきた判定ロール（1d100<={SAN} 【正気度ロール】 など）を、実際にCCFOLIAへ
+     送ってロールし、出てきた判定語（成功系なら1、失敗・ファンブルなら0）を返します。
+     {SAN} のようなパラメータはCCFOLIAが送信時に実際の値へ置き換えるため、
+     結果のメッセージは置き換わった形で出ます（aliasJudgmentCorePatternが吸収します）。 */
+  const rollAliasJudgment = async (command) => {
+    const previousSignatures = new Set((latestChatState?.messages ?? []).map(messageSignature));
+    await sendRequest('CCFOLIA_CHAT_SEND', { text: command });
+    const corePattern = aliasJudgmentCorePattern(command);
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      await refreshChatState({ force: true });
+      const resultMessage = (latestChatState?.messages ?? []).find((message) =>
+        !previousSignatures.has(messageSignature(message))
+        && aliasJudgmentValueFor(message.text, corePattern) !== null
+      );
+      if (resultMessage) {
+        const value = aliasJudgmentValueFor(resultMessage.text, corePattern);
+        chatStatus.textContent = `判定ロール「${command}」は${value === 1 ? '成功' : '失敗'}でした（式では ${value} として扱います）。`;
+        return value;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    }
+    throw new Error(`判定ロール「${command}」の成功・失敗を30秒以内に確認できませんでした。CCFOLIAのダイス設定で成否判定が出る形式（1d100<=50 など）になっているか確認してください。`);
+  };
   const expandAliasVariables = (text, aliasContext) => text.replace(/\[([A-Za-z_]\w*)\]|\b[A-Za-z_]\w*\b/g, (match, bracketedName) => {
     const name = bracketedName ?? match;
     if (aliasContext.failedVariables.has(name)) {
@@ -3002,7 +3403,12 @@
           if (message.aliasIf) {
             let chosenMessages = null;
             try {
-              chosenMessages = evaluateAliasCondition(message.aliasIf.condition, message.aliasIf.aliasContext)
+              chosenMessages = (await evaluateAliasExpressionText(
+                message.aliasIf.condition,
+                message.aliasIf.aliasContext,
+                rollAliasDiceTerm,
+                rollAliasJudgment
+              )) !== 0
                 ? message.aliasIf.thenMessages
                 : message.aliasIf.elseMessages;
             } catch (reason) {
@@ -3022,20 +3428,43 @@
           if (message.delayBefore > 0) {
             await new Promise((resolve) => window.setTimeout(resolve, message.delayBefore));
           }
-          if (message.rollFormula) {
-            const previousSignatures = new Set((latestChatState?.messages ?? []).map(messageSignature));
-            await sendRequest('CCFOLIA_CHAT_SEND', {
-              text: message.rollFormula,
-              ...(message.tabIndex !== null ? { tabIndex: message.tabIndex } : {})
-            });
-            if (message.variableName) {
-              const value = await waitForDiceResult(message.rollFormula, previousSignatures);
-              message.aliasContext.variables[message.variableName] = value;
-              message.aliasContext.failedVariables.delete(message.variableName);
-              chatStatus.textContent = `変数「${message.variableName}」に${value}を設定しました。`;
-            } else {
-              await waitForDiceResult(message.rollFormula, previousSignatures);
+          // while構文: 条件式を評価して、真の間は本体の文をキューの先頭へ差し込み、
+          // 本体の後で条件をもう一度評価できるようwhile自身も差し戻します。
+          // 変数やダイスの結果次第なので、評価はキューがこの地点に来たときに行います。
+          if (message.aliasWhile) {
+            let conditionValue = 0;
+            try {
+              conditionValue = await evaluateAliasExpressionText(
+                message.aliasWhile.condition,
+                message.aliasWhile.aliasContext,
+                rollAliasDiceTerm,
+                rollAliasJudgment
+              );
+            } catch (reason) {
+              // 条件が評価できない（未定義変数など）ときは、while全体を読み飛ばして続行します。
+              chatStatus.textContent = reason.message;
             }
+            if (conditionValue !== 0) {
+              const next = aliasWhileSplice(message);
+              if (next.error) chatStatus.textContent = next.error;
+              else pendingMessages.unshift(...next.messages);
+            }
+            continue;
+          }
+          // break・continue: そのwhileの残りの本体（と、breakのときはwhile自身）を
+          // キューから取り除きます。どのwhileに対応するかは解析時に付けたloopIdで分かります。
+          if (message.aliasBreak !== undefined) {
+            skipAliasBreakMessages(pendingMessages, message.aliasBreak);
+            continue;
+          }
+          if (message.aliasContinue !== undefined) {
+            skipAliasContinueMessages(pendingMessages, message.aliasContinue);
+            continue;
+          }
+          if (message.assign) {
+            // 代入文・int宣言: 右辺の式を評価して変数へ入れます（ダイス式はここでロールします）。
+            const value = await evaluateAliasAssignment(message.assign, message.aliasContext, rollAliasDiceTerm, rollAliasJudgment);
+            chatStatus.textContent = `変数「${message.assign.name}」に${value}を設定しました。`;
           } else if (message.aliasCommand) {
             const query = expandAliasVariables(message.commandQuery, message.aliasContext);
             if (!query) throw new Error(`/${message.aliasCommand} の後に対象名を入力してください。`);
@@ -3118,7 +3547,7 @@
           }
           void refreshChatState();
         } catch (reason) {
-          if (message.variableName) message.aliasContext.failedVariables.add(message.variableName);
+          if (message.assign) message.aliasContext.failedVariables.add(message.assign.name);
           chatStatus.textContent = reason.message;
           if (message.text && !message.aliasContext && !chatInput.value && pendingMessages.length === 0) {
             chatInput.value = message.text;
