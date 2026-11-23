@@ -43,6 +43,7 @@
   const fontSizeSelect = document.getElementById('font-size-select');
   const logSearchInput = document.getElementById('log-search');
   const logSearchCount = document.getElementById('log-search-count');
+  const togglePinnedButton = document.getElementById('toggle-pinned');
   const sessionTimerToggle = document.getElementById('session-timer-toggle');
   const sessionTimerDisplay = document.getElementById('session-timer-display');
   const sessionMemoToggle = document.getElementById('session-memo-toggle');
@@ -59,6 +60,9 @@
   const SESSION_MEMO_STORAGE_KEY = 'ccfolia-session-memo-v1';
   const PALETTE_STORAGE_KEY = 'ccfolia-chat-palette-v1';
   const ALIAS_STORAGE_KEY = 'ccfolia-alias-v1';
+  const DICE_HISTORY_STORAGE_KEY = 'ccfolia-dice-history-v1';
+  const DICE_HISTORY_LIMIT = 20;
+  const PINNED_STORAGE_KEY = 'ccfolia-pinned-messages-v1';
   let aliasEditorLarge = false;
   try {
     aliasEditorLarge = localStorage.getItem(ALIAS_EDITOR_MODE_STORAGE_KEY) === 'large';
@@ -881,6 +885,7 @@
 
   // ログ検索。発言者名・本文を部分一致で絞り込みます（スペース区切りの複数語のAND一致）。
   let logSearchQuery = '';
+  let showPinnedOnly = false;
   // ルーム確認時にaliasをその部屋のぶんへ入れ替える関数（aliasセクションで代入されます）。
   let applyAliasRoom = null;
   const messageMatchesLogSearch = (message, query) => query.split(/\s+/).filter(Boolean)
@@ -991,6 +996,7 @@
     const renderedRows = [];
     for (const message of logMessages) {
       if (searchWords.length && !messageMatchesLogSearch(message, logSearchQuery)) continue;
+      if (showPinnedOnly && !isPinnedMessage(message)) continue;
       shownMessageCount += 1;
       const item = document.createElement('li');
       item.className = 'chat-message';
@@ -1026,12 +1032,22 @@
       const date = document.createElement('small');
       date.textContent = message.date || '';
       header.append(speaker, date);
+      const pinButton = document.createElement('button');
+      pinButton.type = 'button';
+      pinButton.className = 'message-pin';
+      pinButton.textContent = isPinnedMessage(message) ? '★' : '☆';
+      pinButton.title = isPinnedMessage(message) ? 'ピン留めを解除' : 'ピン留め';
+      pinButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        togglePinMessage(message);
+      });
+      header.append(pinButton);
       const text = document.createElement('p');
       appendMessageText(text, message.text ?? (typeof message === 'string' ? message : ''));
       content.append(header, text);
       item.append(content);
       chatLog.append(item);
-      renderedRows.push({ item, rowIndex: message.rowIndex });
+      renderedRows.push({ item, rowIndex: message.rowIndex, pinned: isPinnedMessage(message) });
     }
     renderAliasExecutionStatus();
     if (previousScrollBottom) chatLog.scrollTop = chatLog.scrollHeight;
@@ -1133,12 +1149,85 @@
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     pruneDiceLastInsert();
   };
+
+  // ダイス履歴。最近挿入・送信したダイス式を保存し、ワンクリックで再挿入できます。
+  let diceHistory = [];
+  try {
+    const stored = JSON.parse(localStorage.getItem(DICE_HISTORY_STORAGE_KEY) || 'null');
+    if (Array.isArray(stored)) diceHistory = stored.filter((x) => typeof x === 'string').slice(0, DICE_HISTORY_LIMIT);
+  } catch {
+    diceHistory = [];
+  }
+  const saveDiceHistory = () => {
+    try {
+      localStorage.setItem(DICE_HISTORY_STORAGE_KEY, JSON.stringify(diceHistory));
+    } catch {
+      // 保存に失敗しても動作は続けます。
+    }
+  };
+  const addDiceHistory = (formula) => {
+    if (!formula || typeof formula !== 'string') return;
+    const normalized = formula.trim();
+    if (!normalized) return;
+    diceHistory = diceHistory.filter((item) => item !== normalized);
+    diceHistory.unshift(normalized);
+    if (diceHistory.length > DICE_HISTORY_LIMIT) diceHistory.length = DICE_HISTORY_LIMIT;
+    saveDiceHistory();
+    renderDiceHistory();
+  };
+  const renderDiceHistory = () => {
+    const container = document.getElementById('dice-history');
+    if (!container) return;
+    container.replaceChildren();
+    if (!diceHistory.length) return;
+    const label = document.createElement('span');
+    label.textContent = '履歴：';
+    label.style.cssText = 'font-size:.785rem;color:#9aa1ad;line-height:20px;margin-right:6px;';
+    container.append(label);
+    for (const formula of diceHistory) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = formula;
+      button.title = formula;
+      button.addEventListener('click', () => {
+        insertChatInputText(formula);
+        addDiceHistory(formula);
+      });
+      container.append(button);
+    }
+  };
+
+  // ログのピン留め。重要な発言を★で留め、ピンだけを抽出して見返せます。
+  let pinnedMessages = new Set();
+  try {
+    const stored = JSON.parse(localStorage.getItem(PINNED_STORAGE_KEY) || 'null');
+    if (Array.isArray(stored)) pinnedMessages = new Set(stored.filter((x) => typeof x === 'string'));
+  } catch {
+    pinnedMessages = new Set();
+  }
+  const savePinned = () => {
+    try {
+      localStorage.setItem(PINNED_STORAGE_KEY, JSON.stringify([...pinnedMessages]));
+    } catch {
+      // 保存に失敗しても動作は続けます。
+    }
+  };
+  const isPinnedMessage = (message) => pinnedMessages.has(messageSignature(message));
+  const togglePinMessage = (message) => {
+    const sig = messageSignature(message);
+    if (pinnedMessages.has(sig)) pinnedMessages.delete(sig);
+    else pinnedMessages.add(sig);
+    savePinned();
+    renderChatState(latestChatState ?? { messages: [], tabs: [], roomPath: location.pathname });
+  };
+
   const insertDiceFormula = (sides) => {
     const previous = diceLastInsert.get(sides);
     if (storedFormulaAt(sides, previous)) {
       // 同じボタンを続けて押したときは、挿入済みの式の個数を増やして差し替えます。
       const count = previous.count + 1;
       const formula = `${count}d${sides}`;
+      addDiceHistory(formula);
       shiftDiceEntries(previous.end, formula.length - (previous.end - previous.start));
       chatInput.setRangeText(formula, previous.start, previous.end, 'end');
       diceLastInsert.set(sides, { start: previous.start, end: previous.start + formula.length, count });
@@ -1171,6 +1260,7 @@
       if (term) {
         const count = Number(term[1]) + 1;
         const formula = `${count}d${sides}`;
+        addDiceHistory(formula);
         shiftDiceEntries(term.index + term[0].length, formula.length - term[0].length);
         chatInput.setRangeText(formula, term.index, term.index + term[0].length, 'end');
         diceLastInsert.set(sides, { start: term.index, end: term.index + formula.length, count });
@@ -1180,6 +1270,7 @@
       at = chainEnd;
       end = at;
       const chainInsertText = `+1d${sides}`;
+      addDiceHistory(chainInsertText);
       chatInput.setRangeText(chainInsertText, at, end, 'end');
       shiftDiceEntries(end, chainInsertText.length);
       diceLastInsert.set(sides, { start: at + 1, end: at + chainInsertText.length, count: 1 });
@@ -1188,6 +1279,7 @@
     }
     // ダイス式の直後でないときは、カーソル位置（選択範囲）へそのまま挿入します。
     const plainInsertText = `1d${sides}`;
+    addDiceHistory(plainInsertText);
     chatInput.setRangeText(plainInsertText, at, end, 'end');
     shiftDiceEntries(end, plainInsertText.length - (end - at));
     diceLastInsert.set(sides, { start: at, end: at + plainInsertText.length, count: 1 });
@@ -1208,8 +1300,13 @@
     sanButton.type = 'button';
     sanButton.textContent = 'SAN';
     sanButton.setAttribute('aria-label', '正気度ロールを入力');
-    sanButton.addEventListener('click', () => insertChatInputText('1d100<={SAN} 【正気度ロール】'));
+    sanButton.addEventListener('click', () => {
+      const text = '1d100<={SAN} 【正気度ロール】';
+      insertChatInputText(text);
+      addDiceHistory(text);
+    });
     diceShortcuts.append(sanButton);
+    renderDiceHistory();
   };
 
   const insertChatInputText = (text) => {
@@ -2225,9 +2322,9 @@
     items[suggestionHighlightIndex].scrollIntoView({ block: 'nearest' });
   };
 
-  /* /t /g /n /c /s /f /grep /l コマンド。fzf風のTab補完で選択します。 */
+  /* /t /g /sg /n /c /s /f /grep /l コマンド。fzf風のTab補完で選択します。 */
   const commandSuggestions = document.getElementById('command-suggestions');
-  let commandMode = null; // 'commands' | 'm'(=/t チャットタブ) | 'grep' | 'g' | 'n' | 'c' | 's' | 'a' | 'v'(=/vc) | 'w'(=/vp) | 'reload'
+  let commandMode = null; // 'commands' | 'm'(=/t チャットタブ) | 'grep' | 'g' | 'sg' | 'n' | 'c' | 's' | 'a' | 'v'(=/vc) | 'w'(=/vp) | 'reload'
   let commandMatches = [];
   let commandIndex = 0;
   let commandQuery = null;
@@ -2237,6 +2334,7 @@
   const commandDefinitions = [
     { command: '/t', description: 'タブ切り替え' },
     { command: '/g', description: '技能選択' },
+    { command: '/sg', description: 'シークレット技能選択' },
     { command: '/n', description: '能力値ロール' },
     { command: '/f', description: '関数' },
     { command: '/grep', description: 'ログ検索' },
@@ -2295,6 +2393,9 @@
     const grep = value.match(/^\/(?:grep|gr)(?:\s+(.*))?$/i);
     if (grep) return { mode: 'grep', query: grep[1] ?? '' };
     // /vc・/vp は2文字のコマンドなので、1文字の判定の前に拾います（/v に 'c' を絞り込み語と誤解させない）。
+    // /sg は /s（シーン）より先に判定します。技能のシークレットロールを入力します。
+    const secretSkill = value.match(/^\/sg(.*)$/i);
+    if (secretSkill) return { mode: 'sg', query: secretSkill[1].replace(/^\s+/, '') };
     const piece = value.match(/^\/vc(?:\s+(.*))?$/i);
     if (piece) return { mode: 'v', query: piece[1] ?? '' };
     const screenPanel = value.match(/^\/vp(?:\s+(.*))?$/i);
@@ -2318,7 +2419,7 @@
     if (mode === 'm') {
       return (latestChatState?.tabs ?? []).map((tab) => ({ label: tab.name, tab }));
     }
-    if (mode === 'g') {
+    if (mode === 'g' || mode === 'sg') {
       return chatPaletteEntries.map((entry) => ({ label: entry, value: entry }));
     }
     if (mode === 'n') {
@@ -2353,10 +2454,19 @@
       });
   };
 
+  // /sg 用。技能の式をシークレットダイス（先頭に s）にします。
+  // すでに s 付きのダイス（s1d100 / sCCB / s(1d100…)）なら二重に付けません。
+  const secretRollText = (text) => {
+    const trimmed = String(text ?? '').trim();
+    if (!trimmed) return trimmed;
+    if (/^s(?:[\s(]*(?:\d|ccb))/i.test(trimmed)) return trimmed;
+    return `s${trimmed}`;
+  };
+
   const commandEmptyMessage = (mode) => {
     if (mode === 'm') return '一致するチャットタブがありません。';
     if (mode === 'grep') return '絞り込み語を入れてEnterで、ログ検索欄へ移動します。';
-    if (mode === 'g') return '一致する技能がありません。「更新」やパレットの「更新」で取得してください。';
+    if (mode === 'g' || mode === 'sg') return '一致する技能がありません。「更新」やパレットの「更新」で取得してください。';
     if (mode === 'n') return '一致する能力値がありません。STR、CON、POW、DEX、APP、SIZ、INT、EDUから選べます。';
     if (mode === 's') return 'シーン候補がありません。入力欄が空の状態から取得するか、「一括取得」で取得してください。';
     if (mode === 'a') return '関数がありません。「設定・キャラクター情報」で関数を登録してください。';
@@ -2670,9 +2780,11 @@
       runAliasEntry(selected.aliasIndex);
       return;
     }
-    if (commandMode === 'g' || commandMode === 'n') {
+    if (commandMode === 'g' || commandMode === 'sg' || commandMode === 'n') {
       // 技能または能力値を選択したら、そのテキストを入力欄に置きます（送信はしません）。
-      chatInput.value = selected.value;
+      // /sg は先頭に s を付けてシークレットダイスにします（すでに s 付きならそのまま）。
+      const value = commandMode === 'sg' ? secretRollText(selected.value) : selected.value;
+      chatInput.value = value;
       hideCommandSuggestions();
       chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length;
       chatInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -3619,6 +3731,13 @@
       return;
     }
     logSearchQuery = logSearchInput.value;
+    if (latestChatState) renderChatState(latestChatState);
+  });
+  togglePinnedButton?.addEventListener('click', () => {
+    showPinnedOnly = !showPinnedOnly;
+    togglePinnedButton.setAttribute('aria-pressed', String(showPinnedOnly));
+    togglePinnedButton.textContent = showPinnedOnly ? 'ピン解除' : 'ピン';
+    togglePinnedButton.classList.toggle('is-on', showPinnedOnly);
     if (latestChatState) renderChatState(latestChatState);
   });
 

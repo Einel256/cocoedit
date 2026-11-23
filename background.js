@@ -41,11 +41,22 @@
         message: `${items.map((item) => `「${item.name}」`).join('')}に新着メッセージがあります`,
         silent: false
       }, () => void chrome.runtime.lastError);
+      try {
+        chrome.action.setBadgeText({ text: String(items.length) });
+        chrome.action.setBadgeBackgroundColor({ color: '#e6004f' });
+      } catch {
+        // バッジ設定に失敗しても通知は続けます。
+      }
       sendResponse({ ok: true });
       return true;
     }
     if (message?.type === 'CCFOLIA_CHAT_UNREAD_CLEAR') {
       chrome.notifications.clear('ccfolia-unread', () => void chrome.runtime.lastError);
+      try {
+        chrome.action.setBadgeText({ text: '' });
+      } catch {
+        // バッジクリアに失敗しても無視します。
+      }
       sendResponse({ ok: true });
       return true;
     }

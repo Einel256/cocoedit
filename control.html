@@ -96,6 +96,7 @@
       <section class="chat-section" aria-label="ルームチャット">
         <div class="log-search-row">
           <input id="log-search" type="search" placeholder="ログを検索（発言者・本文）">
+          <button id="toggle-pinned" type="button" aria-pressed="false" title="ピン留めしたメッセージだけを表示">ピン</button>
           <output id="log-search-count" aria-live="polite"></output>
         </div>
         <div class="session-row" aria-label="セッションタイマー・メモ">
@@ -129,6 +130,7 @@
           <output id="chat-palette-status" role="status"></output>
         </section>
         <div id="dice-shortcuts" class="dice-shortcuts" aria-label="ダイスショートカット"></div>
+        <div id="dice-history" class="dice-history" aria-label="ダイス履歴"></div>
         <div id="alias-buttons" class="alias-buttons" aria-label="関数ボタン"></div>
         <div class="message-composer">
           <textarea id="chat-input" rows="3" placeholder="メッセージを入力" aria-label="メッセージを入力"></textarea>

@@ -2602,5 +2602,35 @@
     return true;
   });
 
+  // 制御ウィンドウを開いていなくても、タブの未読ドットを定期的に確認して通知します。
+  // CCFOLIA側のチャットドロワーを開かず、タブボタン上のドットだけを読みます。
+  let unreadPollTimer = null;
+  const pollUnreadTabs = () => {
+    const buttons = [...document.querySelectorAll('[role="tablist"] button')].filter((button) => button.isConnected);
+    const changedByTab = new Map();
+    for (const [index, button] of buttons.entries()) {
+      const badgeElement = button.querySelector('.MuiBadge-badge');
+      const dot = Boolean(
+        badgeElement
+        && !badgeElement.classList.contains('MuiBadge-invisible')
+        && visible(badgeElement)
+      );
+      const previousDot = lastDotByTab.get(index);
+      lastDotByTab.set(index, dot);
+      if (!unreadSeen) continue;
+      if (dot && previousDot === false) {
+        let name = normalizedText(button);
+        changedByTab.set(index, name);
+        pendingUnread.add(index);
+      }
+      if (!dot && previousDot === true && pendingUnread.delete(index) && !pendingUnread.size) {
+        clearUnreadNotifications();
+      }
+    }
+    unreadSeen = true;
+    if (changedByTab.size) notifyUnreadListeners([...changedByTab].map(([index, name]) => ({ index, name })));
+  };
+  unreadPollTimer = window.setInterval(pollUnreadTabs, 5000);
+
   log('ルーム用Content Scriptを読み込みました。');
 })();
