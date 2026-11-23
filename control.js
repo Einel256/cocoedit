@@ -11,8 +11,6 @@
   const chatInput = document.getElementById('chat-input');
   const sendButton = document.getElementById('send-message');
   const clearMessageButton = document.getElementById('clear-message');
-  const composerSpeakerAvatar = document.getElementById('composer-speaker-avatar');
-  const composerSpeakerName = document.getElementById('composer-speaker-name');
   const closeRoomChatButton = document.getElementById('close-room-chat');
   const refreshScanButton = document.getElementById('refresh-scan');
   const openChatPaletteButton = document.getElementById('open-chat-palette');
@@ -60,8 +58,6 @@
   const SESSION_MEMO_STORAGE_KEY = 'ccfolia-session-memo-v1';
   const PALETTE_STORAGE_KEY = 'ccfolia-chat-palette-v1';
   const ALIAS_STORAGE_KEY = 'ccfolia-alias-v1';
-  const DICE_HISTORY_STORAGE_KEY = 'ccfolia-dice-history-v1';
-  const DICE_HISTORY_LIMIT = 20;
   const PINNED_STORAGE_KEY = 'ccfolia-pinned-messages-v1';
   let aliasEditorLarge = false;
   try {
@@ -1086,9 +1082,7 @@
         : '';
     }
 
-    composerSpeakerAvatar.src = chatState.speakerAvatar ?? '';
-    composerSpeakerAvatar.hidden = !chatState.speakerAvatar;
-    composerSpeakerName.textContent = `入力中: ${chatState.speakerName || '（発言者なし）'}`;
+
 
     speakerAvatar.src = chatState.speakerAvatar ?? '';
     speakerAvatar.hidden = !chatState.speakerAvatar;
@@ -1150,53 +1144,6 @@
     pruneDiceLastInsert();
   };
 
-  // ダイス履歴。最近挿入・送信したダイス式を保存し、ワンクリックで再挿入できます。
-  let diceHistory = [];
-  try {
-    const stored = JSON.parse(localStorage.getItem(DICE_HISTORY_STORAGE_KEY) || 'null');
-    if (Array.isArray(stored)) diceHistory = stored.filter((x) => typeof x === 'string').slice(0, DICE_HISTORY_LIMIT);
-  } catch {
-    diceHistory = [];
-  }
-  const saveDiceHistory = () => {
-    try {
-      localStorage.setItem(DICE_HISTORY_STORAGE_KEY, JSON.stringify(diceHistory));
-    } catch {
-      // 保存に失敗しても動作は続けます。
-    }
-  };
-  const addDiceHistory = (formula) => {
-    if (!formula || typeof formula !== 'string') return;
-    const normalized = formula.trim();
-    if (!normalized) return;
-    diceHistory = diceHistory.filter((item) => item !== normalized);
-    diceHistory.unshift(normalized);
-    if (diceHistory.length > DICE_HISTORY_LIMIT) diceHistory.length = DICE_HISTORY_LIMIT;
-    saveDiceHistory();
-    renderDiceHistory();
-  };
-  const renderDiceHistory = () => {
-    const container = document.getElementById('dice-history');
-    if (!container) return;
-    container.replaceChildren();
-    if (!diceHistory.length) return;
-    const label = document.createElement('span');
-    label.textContent = '履歴：';
-    label.style.cssText = 'font-size:.785rem;color:#9aa1ad;line-height:20px;margin-right:6px;';
-    container.append(label);
-    for (const formula of diceHistory) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = formula;
-      button.title = formula;
-      button.addEventListener('click', () => {
-        insertChatInputText(formula);
-        addDiceHistory(formula);
-      });
-      container.append(button);
-    }
-  };
-
   // ログのピン留め。重要な発言を★で留め、ピンだけを抽出して見返せます。
   let pinnedMessages = new Set();
   try {
@@ -1227,7 +1174,6 @@
       // 同じボタンを続けて押したときは、挿入済みの式の個数を増やして差し替えます。
       const count = previous.count + 1;
       const formula = `${count}d${sides}`;
-      addDiceHistory(formula);
       shiftDiceEntries(previous.end, formula.length - (previous.end - previous.start));
       chatInput.setRangeText(formula, previous.start, previous.end, 'end');
       diceLastInsert.set(sides, { start: previous.start, end: previous.start + formula.length, count });
@@ -1260,7 +1206,6 @@
       if (term) {
         const count = Number(term[1]) + 1;
         const formula = `${count}d${sides}`;
-        addDiceHistory(formula);
         shiftDiceEntries(term.index + term[0].length, formula.length - term[0].length);
         chatInput.setRangeText(formula, term.index, term.index + term[0].length, 'end');
         diceLastInsert.set(sides, { start: term.index, end: term.index + formula.length, count });
@@ -1270,7 +1215,6 @@
       at = chainEnd;
       end = at;
       const chainInsertText = `+1d${sides}`;
-      addDiceHistory(chainInsertText);
       chatInput.setRangeText(chainInsertText, at, end, 'end');
       shiftDiceEntries(end, chainInsertText.length);
       diceLastInsert.set(sides, { start: at + 1, end: at + chainInsertText.length, count: 1 });
@@ -1279,7 +1223,6 @@
     }
     // ダイス式の直後でないときは、カーソル位置（選択範囲）へそのまま挿入します。
     const plainInsertText = `1d${sides}`;
-    addDiceHistory(plainInsertText);
     chatInput.setRangeText(plainInsertText, at, end, 'end');
     shiftDiceEntries(end, plainInsertText.length - (end - at));
     diceLastInsert.set(sides, { start: at, end: at + plainInsertText.length, count: 1 });
@@ -1303,10 +1246,8 @@
     sanButton.addEventListener('click', () => {
       const text = '1d100<={SAN} 【正気度ロール】';
       insertChatInputText(text);
-      addDiceHistory(text);
     });
     diceShortcuts.append(sanButton);
-    renderDiceHistory();
   };
 
   const insertChatInputText = (text) => {
